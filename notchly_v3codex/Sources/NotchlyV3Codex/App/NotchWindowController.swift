@@ -65,6 +65,21 @@ final class NotchWindowController: NSWindowController {
             self?.state.calendarEvents = events
         }
         calendarManager.start()
+
+        // DataStore — V2 schedule, alerts, memory, notion
+        DataStore.shared.onScheduleUpdate = { [weak self] tasks in
+            self?.state.applySchedule(tasks)
+        }
+        DataStore.shared.onAlertsUpdate = { [weak self] alerts in
+            self?.state.applyAlerts(alerts)
+        }
+        DataStore.shared.onMemoryUpdate = { [weak self] mem in
+            self?.state.workingMemory = mem
+        }
+        DataStore.shared.onNotionUpdate = { [weak self] tasks in
+            self?.state.notionTasks = tasks
+        }
+        DataStore.shared.start()
     }
 
     override func showWindow(_ sender: Any?) {

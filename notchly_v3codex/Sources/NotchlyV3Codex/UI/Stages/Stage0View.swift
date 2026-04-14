@@ -2,19 +2,32 @@ import SwiftUI
 
 struct Stage0View: View {
     let dimensions: NotchDimensions
+    var hasPendingAlert: Bool = false
+    var hasActiveTask: Bool = false
+    var isPlaying: Bool = false
+
+    var dotColor: SwiftUI.Color {
+        if hasPendingAlert { return ND.Color.orange }
+        if hasActiveTask   { return ND.Color.green }
+        if isPlaying       { return ND.Color.blue }
+        return ND.Color.muted
+    }
+
+    var shouldPulse: Bool {
+        hasPendingAlert || hasActiveTask || isPlaying
+    }
 
     var body: some View {
         let settings = SettingsManager.shared
         let radius = CGFloat(settings.cornerRadius)
 
         AsymmetricRoundedRect(topRadius: 0, bottomRadius: radius)
-            .fill(Color.black)
+            .fill(SwiftUI.Color.black)
             .frame(width: settings.collapsedWidth, height: settings.collapsedHeight)
             .overlay(alignment: .bottom) {
-                Circle()
-                    .fill(Color.white.opacity(0.12))
-                    .frame(width: 5, height: 5)
+                NStatusDot(color: dotColor, pulse: shouldPulse)
                     .padding(.bottom, 7)
+                    .animation(ND.Motion.micro, value: dotColor)
             }
     }
 }

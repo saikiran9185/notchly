@@ -8,51 +8,58 @@ struct Stage2CardView: View {
     let centerAction: NotchAction?
     let rightAction: NotchAction?
     let swipeOffset: CGFloat
+    var icon: String = "calendar"
+    var iconColor: SwiftUI.Color = ND.Color.blue
 
     var body: some View {
-        AsymmetricRoundedRect(topRadius: 0, bottomRadius: 24)
-            .fill(Color.black.opacity(0.98))
+        AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.expanded)
+            .fill(SwiftUI.Color.black.opacity(0.98))
             .overlay {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: ND.Space.md) {
+                    // Header
+                    HStack(spacing: ND.Space.sm) {
+                        Image(systemName: icon)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(iconColor)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(iconColor.opacity(0.12)))
 
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.68))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(title)
+                                .font(ND.Font.body(14))
+                                .foregroundStyle(ND.Color.primary)
+                                .lineLimit(1)
+                            Text(subtitle)
+                                .font(ND.Font.caption())
+                                .foregroundStyle(ND.Color.secondary)
+                                .lineLimit(1)
+                        }
+                    }
 
-                    HStack(spacing: 10) {
-                        if let leftAction {
-                            actionChip(leftAction.title)
+                    // Actions
+                    HStack(spacing: ND.Space.sm) {
+                        if let left = leftAction {
+                            NChip(label: left.title, accent: ND.Color.secondary)
                         }
-                        if let centerAction {
-                            actionChip(centerAction.title)
+                        if let center = centerAction {
+                            NChip(label: center.title, accent: ND.Color.blue)
                         }
-                        if let rightAction {
-                            actionChip(rightAction.title)
+                        if let right = rightAction {
+                            NChip(label: right.title, accent: ND.Color.green)
                         }
                     }
                 }
-                .padding(.top, dimensions.notchHeight + 12)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
+                .padding(.top, dimensions.notchHeight + ND.Space.md)
+                .padding(.horizontal, ND.Space.lg)
+                .padding(.bottom, ND.Space.lg)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .overlay {
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.expanded)
+                    .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
             .offset(x: swipeOffset * 0.9)
             .frame(width: 380, alignment: .top)
-            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: 24))
-    }
-
-    private func actionChip(_ label: String) -> some View {
-        Text(label)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.92))
-            .padding(.vertical, 8)
-            .padding(.horizontal, 12)
-            .background(
-                Capsule()
-                    .fill(Color.white.opacity(0.08))
-            )
+            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.expanded))
     }
 }

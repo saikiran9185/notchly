@@ -5,50 +5,76 @@ struct Stage15HoverView: View {
     let message: String
     let nowPlaying: NowPlayingInfo?
     let bluetoothDevice: BTDeviceInfo?
+    let activeTask: ScheduleTask?
 
     var body: some View {
-        AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18)
-            .fill(Color.black.opacity(0.98))
+        AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+            .fill(SwiftUI.Color.black.opacity(0.98))
             .overlay {
-                VStack(spacing: 4) {
-                    if let np = nowPlaying {
-                        HStack(spacing: 6) {
-                            Image(systemName: "music.note")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Color.green.opacity(0.8))
-                            Text(np.displayLine)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.9))
+                HStack(spacing: 0) {
+                    // Left: context info
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let np = nowPlaying {
+                            HStack(spacing: 5) {
+                                Image(systemName: "music.note")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(ND.Color.green)
+                                Text(np.displayLine)
+                                    .font(ND.Font.caption())
+                                    .foregroundStyle(ND.Color.primary)
+                                    .lineLimit(1)
+                            }
+                        } else if let task = activeTask {
+                            HStack(spacing: 5) {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 6))
+                                    .foregroundStyle(ND.Color.green)
+                                Text(task.title)
+                                    .font(ND.Font.caption())
+                                    .foregroundStyle(ND.Color.primary)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Text("Now")
+                                .font(ND.Font.label())
+                                .foregroundStyle(ND.Color.tertiary)
+                                .tracking(0.5)
+                            Text(message)
+                                .font(ND.Font.caption())
+                                .foregroundStyle(ND.Color.primary)
                                 .lineLimit(1)
                         }
-                    } else {
-                        Text("Now")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.45))
-                        Text(message)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.94))
-                            .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if let device = bluetoothDevice, let pct = device.batteryPercent {
+                    // Right: battery chip
+                    if let device = bluetoothDevice {
                         HStack(spacing: 4) {
-                            Image(systemName: batteryIcon(pct))
-                                .font(.system(size: 10))
-                                .foregroundStyle(batteryColor(pct))
-                            Text("\(device.name.components(separatedBy: " ").first ?? "") \(pct)%")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.5))
+                            if let pct = device.batteryPercent {
+                                Image(systemName: batteryIcon(pct))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(batteryColor(pct))
+                                Text("\(pct)%")
+                                    .font(ND.Font.caption())
+                                    .foregroundStyle(ND.Color.secondary)
+                            } else {
+                                Image(systemName: "airpodspro")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(ND.Color.tertiary)
+                            }
                         }
+                        .padding(.horizontal, ND.Space.sm)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(ND.Color.surface))
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, dimensions.notchHeight)
-                .padding(.bottom, 8)
+                .padding(.horizontal, ND.Space.lg)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .padding(.top, dimensions.notchHeight)
+                .padding(.bottom, ND.Space.sm)
             }
-            .frame(width: 340, height: nowPlaying != nil || bluetoothDevice?.batteryPercent != nil ? 80 : 70, alignment: .top)
-            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18))
+            .frame(width: 340, height: 70, alignment: .top)
+            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
     }
 
     private func batteryIcon(_ pct: Int) -> String {
@@ -61,7 +87,7 @@ struct Stage15HoverView: View {
         }
     }
 
-    private func batteryColor(_ pct: Int) -> Color {
-        pct < 20 ? .red : pct < 40 ? .orange : .green.opacity(0.8)
+    private func batteryColor(_ pct: Int) -> SwiftUI.Color {
+        pct < 20 ? ND.Color.red : pct < 40 ? ND.Color.orange : ND.Color.green
     }
 }

@@ -7,61 +7,71 @@ struct Stage1NotificationView: View {
     let rightAction: NotchAction?
     let showsButtons: Bool
     let swipeOffset: CGFloat
+    var alertType: String = "nudge"
+
+    var typeIcon: String {
+        switch alertType {
+        case "calendar":  return "calendar"
+        case "reminder":  return "bell.fill"
+        case "notion":    return "doc.text.fill"
+        case "ai":        return "sparkles"
+        default:          return "bell.badge.fill"
+        }
+    }
+
+    var typeColor: SwiftUI.Color {
+        switch alertType {
+        case "calendar":  return ND.Color.blue
+        case "reminder":  return ND.Color.orange
+        case "ai":        return ND.Color.purple
+        default:          return ND.Color.secondary
+        }
+    }
 
     var body: some View {
-        AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18)
-            .fill(Color.black.opacity(0.98))
+        AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+            .fill(SwiftUI.Color.black.opacity(0.98))
             .overlay {
-                VStack(spacing: 8) {
-                    Text(message)
-                        .font(.system(size: 13, weight: .medium, design: .default))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .lineLimit(1)
-                        .padding(.horizontal, 16)
+                VStack(spacing: ND.Space.sm) {
+                    // Icon + message row
+                    HStack(spacing: ND.Space.sm) {
+                        Image(systemName: typeIcon)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(typeColor)
+                            .frame(width: 18)
+
+                        Text(message)
+                            .font(ND.Font.body())
+                            .foregroundStyle(ND.Color.primary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, ND.Space.lg)
 
                     if showsButtons {
-                        HStack(spacing: 10) {
-                            if let leftAction {
-                                actionChip(leftAction.title, emphasis: .neutral)
+                        HStack(spacing: ND.Space.sm) {
+                            if let left = leftAction {
+                                NChip(label: left.title, accent: ND.Color.secondary)
                             }
-                            if let rightAction {
-                                actionChip(rightAction.title, emphasis: .positive)
+                            if let right = rightAction {
+                                NChip(label: right.title, accent: ND.Color.green)
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 10)
+                        .padding(.horizontal, ND.Space.md)
+                        .padding(.bottom, ND.Space.md)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     } else {
-                        Spacer()
-                            .frame(height: 10)
+                        Spacer().frame(height: ND.Space.md)
                     }
                 }
-                .padding(.top, dimensions.notchHeight + 12)
+                .padding(.top, dimensions.notchHeight + ND.Space.md)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .overlay {
-                AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+                    .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
             .offset(x: swipeOffset * 0.9)
             .frame(minWidth: 240, maxWidth: 400, alignment: .top)
-            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18))
-    }
-
-    private func actionChip(_ label: String, emphasis: Emphasis) -> some View {
-        Text(label)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(emphasis == .positive ? Color.green.opacity(0.95) : .white.opacity(0.9))
-            .padding(.vertical, 8)
-            .padding(.horizontal, 12)
-            .background(
-                Capsule()
-                    .fill(Color.white.opacity(0.08))
-            )
-    }
-
-    private enum Emphasis {
-        case neutral
-        case positive
+            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
     }
 }

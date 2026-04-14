@@ -53,7 +53,12 @@ struct NotchRootView: View {
     private var stageView: some View {
         switch state.currentStage {
         case .s0Idle:
-            Stage0View(dimensions: state.dimensions)
+            Stage0View(
+                dimensions: state.dimensions,
+                hasPendingAlert: state.hasPendingAlert,
+                hasActiveTask: state.hasActiveTask,
+                isPlaying: state.isPlayingMusic
+            )
         case .s1Notification:
             Stage1NotificationView(
                 dimensions: state.dimensions,
@@ -61,13 +66,15 @@ struct NotchRootView: View {
                 leftAction: state.leftAction,
                 rightAction: state.rightAction,
                 showsButtons: state.showsInlineButtons,
-                swipeOffset: state.swipeOffset
+                swipeOffset: state.swipeOffset,
+                alertType: state.currentAlertType
             )
         case .s1Timer:
             Stage1TimerView(
                 dimensions: state.dimensions,
-                title: "Typography draft",
+                title: state.activeTask?.title ?? state.currentMessage,
                 timerLabel: state.currentTimerLabel,
+                progress: state.timerProgress,
                 leftAction: state.leftAction,
                 rightAction: state.rightAction,
                 showsButtons: state.showsInlineButtons,
@@ -85,13 +92,14 @@ struct NotchRootView: View {
                 dimensions: state.dimensions,
                 message: state.currentMessage,
                 nowPlaying: state.nowPlaying,
-                bluetoothDevice: state.bluetoothDevice
+                bluetoothDevice: state.bluetoothDevice,
+                activeTask: state.activeTask
             )
         case .s2Card:
             Stage2CardView(
                 dimensions: state.dimensions,
-                title: "Breakfast reminder",
-                subtitle: state.secondaryMessage,
+                title: state.activeTask?.title ?? state.currentMessage,
+                subtitle: state.activeTask?.project ?? state.secondaryMessage,
                 leftAction: state.leftAction,
                 centerAction: state.centerAction,
                 rightAction: state.rightAction,
@@ -104,7 +112,11 @@ struct NotchRootView: View {
                 nextEvent: state.nextCalEvent,
                 missedCount: state.missedCalCount,
                 nowPlaying: state.nowPlaying,
-                bluetoothDevice: state.bluetoothDevice
+                bluetoothDevice: state.bluetoothDevice,
+                activeTask: state.activeTask,
+                pendingTasks: state.pendingTasks,
+                notionTasks: state.notionTasks,
+                memory: state.workingMemory
             )
         case .s4Chat:
             Stage4ChatView(dimensions: state.dimensions)
