@@ -6,39 +6,69 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
     private let state = NotchState()
     private var localScrollMonitor: Any?
     private var globalScrollMonitor: Any?
-    private var mouseMoveMonitor: Any?
+    // NOTE: no global mouseMoved monitor — requires Accessibility permission.
+    // Hover is handled via NSTrackingArea on the tracking overlay view.
 
-    private let volumeMonitor    = VolumeMonitor()
+    private let volumeMonitor     = VolumeMonitor()
     private let nowPlayingMonitor = NowPlayingMonitor()
-    private let batteryMonitor   = BatteryMonitor()
-    private let calendarManager  = CalendarManager()
+    private let batteryMonitor    = BatteryMonitor()
+    private let calendarManager   = CalendarManager()
+
+    private weak var trackingOverlay: NotchTrackingView?
 
     init(settings: SettingsManager) {
         let panel = NotchPanel()
         super.init(window: panel)
         state.attach(settings: settings)
 
+        // Hosting view (SwiftUI root)
         let hostingView = NSHostingView(rootView: NotchRootView(state: state))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = hostingView
         panel.backgroundColor = .clear
 
-        if let contentView = panel.contentView {
+        if let cv = panel.contentView {
             NSLayoutConstraint.activate([
-                hostingView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                hostingView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                hostingView.topAnchor.constraint(equalTo: contentView.topAnchor),
-                hostingView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+                hostingView.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
+                hostingView.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
+                hostingView.topAnchor.constraint(equalTo: cv.topAnchor),
+                hostingView.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
             ])
         }
+
+        // Transparent tracking overlay — sits on top, captures hover + scroll
+        // without needing Accessibility permission
+        let tracker = NotchTrackingView()
+        tracker.translatesAutoresizingMaskIntoConstraints = false
+        tracker.onEnter = { [weak self] in self?.state.setHover(true) }
+        tracker.onExit  = { [weak self] in self?.state.setHover(false) }
+        tracker.onScroll = { [weak self] event in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.state.registerScroll(
+                    deltaY: event.scrollingDeltaY,
+                    isPrecise: event.hasPreciseScrollingDeltas
+                )
+            }
+        }
+        panel.contentView?.addSubview(tracker)
+        if let cv = panel.contentView {
+            NSLayoutConstraint.activate([
+                tracker.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
+                tracker.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
+                tracker.topAnchor.constraint(equalTo: cv.topAnchor),
+                tracker.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
+            ])
+        }
+        trackingOverlay = tracker
 
         state.recalculate(using: currentScreen())
         applyWindowFrame(animated: false)
 
-        // IMPORTANT: windowDidLoad is NOT called when window is set via init(window:).
-        // Wire everything here directly.
+        // windowDidLoad is NOT called when window is set via init(window:) —
+        // wire all observers and monitors directly here.
         setupNotificationObservers()
-        installEventMonitors()
+        installScrollMonitors()
         startMonitors()
     }
 
@@ -48,45 +78,29 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
     // MARK: - Setup
 
     private func setupNotificationObservers() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleStageChange),
-            name: NotchState.stageDidChangeNotification,
-            object: state
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleScreenChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleSettingsChange),
-            name: .notchSettingsDidChange,
-            object: nil
-        )
+        NotificationCenter.default.addObserver(self, selector: #selector(handleStageChange),
+            name: NotchState.stageDidChangeNotification, object: state)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleScreenChange),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleSettingsChange),
+            name: .notchSettingsDidChange, object: nil)
     }
 
-    private func installEventMonitors() {
-        // Local: catches scroll events when our panel is frontmost
+    private func installScrollMonitors() {
+        // Local: events that land in our window
         localScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             self?.handleScrollEvent(event)
             return event
         }
-        // Global: catches scroll events from any app window (primary path)
+        // Global: events anywhere on screen while cursor is in hover zone
         globalScrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             self?.handleScrollEvent(event)
-        }
-        // Track mouse position for hover zone (no accessibility needed)
-        mouseMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
-            self?.updateHoverState()
         }
     }
 
     private func startMonitors() {
-        volumeMonitor.onVolumeChange = { [weak self] volume, muted in
-            DispatchQueue.main.async { self?.state.handleVolumeChange(volume: volume, muted: muted) }
+        volumeMonitor.onVolumeChange = { [weak self] vol, muted in
+            DispatchQueue.main.async { self?.state.handleVolumeChange(volume: vol, muted: muted) }
         }
         volumeMonitor.start()
 
@@ -120,11 +134,11 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
 
     // MARK: - Notification handlers
 
-    @objc private func handleStageChange()   { applyWindowFrame(animated: true) }
-    @objc private func handleScreenChange()  { state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
-    @objc private func handleSettingsChange(){ state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
+    @objc private func handleStageChange()    { applyWindowFrame(animated: true) }
+    @objc private func handleScreenChange()   { state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
+    @objc private func handleSettingsChange() { state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
 
-    // MARK: - Scroll
+    // MARK: - Scroll (global fallback for events outside the window)
 
     private func handleScrollEvent(_ event: NSEvent) {
         guard cursorIsInHoverZone() else { return }
@@ -136,27 +150,14 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
         }
     }
 
-    private func updateHoverState() {
-        let inZone = cursorIsInHoverZone()
-        DispatchQueue.main.async { [weak self] in
-            self?.state.setHover(inZone)
-        }
-    }
-
     private func cursorIsInHoverZone() -> Bool {
-        let mouse      = NSEvent.mouseLocation
-        let notchMidX  = state.dimensions.screenMidX
-        let screenTop  = state.dimensions.screenMaxY
-        // Wide generous zone: 600 pt wide × 120 pt tall centered on notch
+        let mouse     = NSEvent.mouseLocation
+        let midX      = state.dimensions.screenMidX
+        let screenTop = state.dimensions.screenMaxY
         let zoneW: CGFloat = 600
         let zoneH: CGFloat = 120
-        let rect = NSRect(
-            x: notchMidX - zoneW / 2,
-            y: screenTop - zoneH,
-            width: zoneW,
-            height: zoneH
-        )
-        return rect.contains(mouse)
+        return NSRect(x: midX - zoneW / 2, y: screenTop - zoneH,
+                      width: zoneW, height: zoneH).contains(mouse)
     }
 
     // MARK: - Screen helpers
@@ -167,8 +168,8 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
 
     private func builtinScreen() -> NSScreen? {
         NSScreen.screens.first { screen in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
-            return CGDisplayIsBuiltin(CGDirectDisplayID(number.uint32Value)) != 0
+            guard let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
+            return CGDisplayIsBuiltin(CGDirectDisplayID(n.uint32Value)) != 0
         }
     }
 
@@ -178,19 +179,57 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
         guard let panel = window as? NSPanel else { return }
         let stage = state.currentStage
         let size  = state.size(for: stage)
-        let x = state.dimensions.screenMidX - (size.width / 2.0) + state.horizontalOffset(for: stage)
-        let y = state.dimensions.screenMaxY - size.height
+        let x     = state.dimensions.screenMidX - (size.width / 2.0) + state.horizontalOffset(for: stage)
+        let y     = state.dimensions.screenMaxY - size.height
         let frame = NSRect(x: x, y: y, width: size.width, height: size.height)
         panel.setContentSize(size)
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.32
+                ctx.duration = 0.28
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 panel.animator().setFrame(frame, display: true)
             }
         } else {
             panel.setFrame(frame, display: true)
         }
+    }
+}
+
+// MARK: - Tracking overlay view (hover + scroll, no Accessibility needed)
+
+final class NotchTrackingView: NSView {
+    var onEnter:  (() -> Void)?
+    var onExit:   (() -> Void)?
+    var onScroll: ((NSEvent) -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onEnter?() }
+    override func mouseExited(with event: NSEvent)  { onExit?()  }
+    override func scrollWheel(with event: NSEvent)  { onScroll?(event) }
+
+    // Pass all other events through so SwiftUI taps/gestures still work
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Return nil so clicks fall through to the hosting view beneath
+        nil
     }
 }
 
@@ -204,17 +243,17 @@ private final class NotchPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        isReleasedWhenClosed        = false
-        isOpaque                    = false
-        hasShadow                   = false
-        level                       = .statusBar
-        collectionBehavior          = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-        backgroundColor             = .clear
-        ignoresMouseEvents          = false
-        hidesOnDeactivate           = false
-        titleVisibility             = .hidden
-        titlebarAppearsTransparent  = true
-        acceptsMouseMovedEvents     = true
+        isReleasedWhenClosed       = false
+        isOpaque                   = false
+        hasShadow                  = false
+        level                      = .statusBar
+        collectionBehavior         = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        backgroundColor            = .clear
+        ignoresMouseEvents         = false
+        hidesOnDeactivate          = false
+        titleVisibility            = .hidden
+        titlebarAppearsTransparent = true
+        acceptsMouseMovedEvents    = true
     }
 
     override var canBecomeKey:  Bool { false }

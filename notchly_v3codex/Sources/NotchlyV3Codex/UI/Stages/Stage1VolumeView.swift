@@ -3,41 +3,60 @@ import SwiftUI
 struct Stage1VolumeView: View {
     let dimensions: NotchDimensions
     let volume: Float
-    let muted: Bool
+    let muted:  Bool
 
     var body: some View {
-        AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18)
-            .fill(Color.black.opacity(0.98))
+        AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+            .fill(SwiftUI.Color.black.opacity(0.96))
             .overlay {
-                HStack(spacing: 10) {
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+                    .fill(.ultraThinMaterial.opacity(0.12))
+                    .environment(\.colorScheme, .dark)
+            }
+            .overlay {
+                HStack(spacing: ND.Space.md) {
                     Image(systemName: iconName)
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .frame(width: 18)
+                        .foregroundStyle(muted ? ND.Color.red : ND.Color.primary)
+                        .frame(width: 20)
+                        .animation(ND.Motion.micro, value: muted)
 
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule()
-                                .fill(Color.white.opacity(0.12))
+                                .fill(ND.Color.surface)
                             Capsule()
-                                .fill(Color.white.opacity(0.85))
-                                .frame(width: geo.size.width * CGFloat(muted ? 0 : volume))
-                                .animation(.easeOut(duration: 0.15), value: volume)
+                                .fill(
+                                    LinearGradient(
+                                        colors: volumeColors,
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: max(0, geo.size.width * CGFloat(muted ? 0 : volume)))
+                                .animation(ND.Motion.fast, value: volume)
+                                .animation(ND.Motion.fast, value: muted)
                         }
                     }
                     .frame(height: 4)
+
+                    Text(muted ? "Muted" : "\(Int(volume * 100))%")
+                        .font(ND.Font.mono(11))
+                        .foregroundStyle(ND.Color.tertiary)
+                        .frame(width: 36, alignment: .trailing)
+                        .animation(ND.Motion.micro, value: muted)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, ND.Space.lg)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(.top, dimensions.notchHeight)
-                .padding(.bottom, 8)
+                .padding(.bottom, ND.Space.sm)
             }
             .overlay {
-                AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+                    .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
-            .frame(width: 220)
-            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: 18))
+            .frame(width: 240)
+            .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
     }
 
     private var iconName: String {
@@ -45,5 +64,11 @@ struct Stage1VolumeView: View {
         if volume < 0.33 { return "speaker.wave.1.fill" }
         if volume < 0.66 { return "speaker.wave.2.fill" }
         return "speaker.wave.3.fill"
+    }
+
+    private var volumeColors: [SwiftUI.Color] {
+        if muted { return [ND.Color.red.opacity(0.4), ND.Color.red] }
+        if volume > 0.8 { return [ND.Color.green.opacity(0.6), ND.Color.orange] }
+        return [ND.Color.green.opacity(0.7), ND.Color.green]
     }
 }

@@ -161,14 +161,10 @@ final class NotchState: ObservableObject {
     func horizontalOffset(for stage: NotchStage) -> CGFloat {
         let settings = settings ?? .shared
         switch stage {
-        case .s1Notification, .s1Timer, .s2Card, .s1Volume:
+        case .s0Idle, .s1Notification, .s1Timer, .s2Card, .s1Volume:
             return settings.compactOffsetX
-        case .s0Idle:
-            return settings.compactOffsetX - 16
-        case .s15Hover:
-            return settings.expandedOffsetX - 24
-        case .s3Dashboard, .s4Chat:
-            return settings.expandedOffsetX - 36
+        case .s15Hover, .s3Dashboard, .s4Chat:
+            return settings.expandedOffsetX
         }
     }
 
@@ -291,7 +287,7 @@ final class NotchState: ObservableObject {
         let scaledDelta = isPrecise ? rawDeltaY : rawDeltaY * 8.0
         scrollAccumulator += scaledDelta
         scrollResetTimer?.invalidate()
-        scrollResetTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
+        scrollResetTimer = Timer.scheduledTimer(withTimeInterval: 0.30, repeats: false) { [weak self] _ in
             self?.scrollAccumulator = 0
         }
         if scrollAccumulator <= -24 { setStage(.s0Idle); scrollAccumulator = 0; return }

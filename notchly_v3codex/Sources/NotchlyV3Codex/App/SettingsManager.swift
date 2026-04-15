@@ -40,27 +40,35 @@ final class SettingsManager: ObservableObject {
 
     private init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        collapsedWidth = defaults.object(forKey: "collapsedWidth") as? Double ?? 180
+        // v3 layout uses screenMidX = actual notch center so offsets default to 0.
+        // Bump settingsVersion to clear stale v2 UserDefaults (−70/−28 offsets).
+        let version = defaults.integer(forKey: "settingsVersion")
+        if version < 3 {
+            defaults.removeObject(forKey: "compactOffsetX")
+            defaults.removeObject(forKey: "expandedOffsetX")
+            defaults.set(3, forKey: "settingsVersion")
+        }
+        collapsedWidth  = defaults.object(forKey: "collapsedWidth")  as? Double ?? 180
         collapsedHeight = defaults.object(forKey: "collapsedHeight") as? Double ?? 32
-        expandedWidth = defaults.object(forKey: "expandedWidth") as? Double ?? 510
-        expandedHeight = defaults.object(forKey: "expandedHeight") as? Double ?? 250
-        widgetWidth = defaults.object(forKey: "widgetWidth") as? Double ?? 350
-        widgetHeight = defaults.object(forKey: "widgetHeight") as? Double ?? 37
-        cornerRadius = defaults.object(forKey: "cornerRadius") as? Double ?? 15
-        compactOffsetX = defaults.object(forKey: "compactOffsetX") as? Double ?? -70
-        expandedOffsetX = defaults.object(forKey: "expandedOffsetX") as? Double ?? -28
+        expandedWidth   = defaults.object(forKey: "expandedWidth")   as? Double ?? 510
+        expandedHeight  = defaults.object(forKey: "expandedHeight")  as? Double ?? 250
+        widgetWidth     = defaults.object(forKey: "widgetWidth")     as? Double ?? 350
+        widgetHeight    = defaults.object(forKey: "widgetHeight")    as? Double ?? 37
+        cornerRadius    = defaults.object(forKey: "cornerRadius")    as? Double ?? 15
+        compactOffsetX  = defaults.object(forKey: "compactOffsetX")  as? Double ?? 0
+        expandedOffsetX = defaults.object(forKey: "expandedOffsetX") as? Double ?? 0
     }
 
     func resetToDefaults() {
-        collapsedWidth = 180
+        collapsedWidth  = 180
         collapsedHeight = 32
-        expandedWidth = 510
-        expandedHeight = 250
-        widgetWidth = 350
-        widgetHeight = 37
-        cornerRadius = 15
-        compactOffsetX = -70
-        expandedOffsetX = -28
+        expandedWidth   = 510
+        expandedHeight  = 250
+        widgetWidth     = 350
+        widgetHeight    = 37
+        cornerRadius    = 15
+        compactOffsetX  = 0
+        expandedOffsetX = 0
     }
 
     private func persist(_ key: String, _ value: Double) {
