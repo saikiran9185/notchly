@@ -2,11 +2,11 @@ import SwiftUI
 
 struct Stage1NotificationView: View {
     let dimensions: NotchDimensions
-    let message: String
-    let leftAction: NotchAction?
+    let message:     String
+    let leftAction:  NotchAction?
     let rightAction: NotchAction?
     let showsButtons: Bool
-    let swipeOffset: CGFloat
+    let swipeOffset:  CGFloat
     var alertType: String = "nudge"
 
     var typeIcon: String {
@@ -21,32 +21,45 @@ struct Stage1NotificationView: View {
 
     var typeColor: SwiftUI.Color {
         switch alertType {
-        case "calendar":  return ND.Color.blue
-        case "reminder":  return ND.Color.orange
-        case "ai":        return ND.Color.purple
-        default:          return ND.Color.secondary
+        case "calendar": return ND.Color.blue
+        case "reminder": return ND.Color.orange
+        case "ai":       return ND.Color.purple
+        default:         return ND.Color.secondary
         }
     }
 
     var body: some View {
         AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
-            .fill(SwiftUI.Color.black.opacity(0.98))
+            .fill(SwiftUI.Color.black.opacity(0.96))
             .overlay {
-                VStack(spacing: ND.Space.sm) {
-                    // Icon + message row
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+                    .fill(.ultraThinMaterial.opacity(0.15))
+                    .environment(\.colorScheme, .dark)
+            }
+            .overlay {
+                VStack(spacing: 0) {
+                    // Icon + message
                     HStack(spacing: ND.Space.sm) {
-                        Image(systemName: typeIcon)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(typeColor)
-                            .frame(width: 18)
+                        ZStack {
+                            Circle()
+                                .fill(typeColor.opacity(0.15))
+                                .frame(width: 26, height: 26)
+                            Image(systemName: typeIcon)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(typeColor)
+                        }
 
                         Text(message)
                             .font(ND.Font.body())
                             .foregroundStyle(ND.Color.primary)
                             .lineLimit(1)
+
+                        Spacer(minLength: 0)
                     }
                     .padding(.horizontal, ND.Space.lg)
+                    .padding(.top, dimensions.notchHeight + ND.Space.md)
 
+                    // Action buttons
                     if showsButtons {
                         HStack(spacing: ND.Space.sm) {
                             if let left = leftAction {
@@ -57,21 +70,22 @@ struct Stage1NotificationView: View {
                             }
                         }
                         .padding(.horizontal, ND.Space.md)
+                        .padding(.top, ND.Space.sm)
                         .padding(.bottom, ND.Space.md)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     } else {
                         Spacer().frame(height: ND.Space.md)
                     }
                 }
-                .padding(.top, dimensions.notchHeight + ND.Space.md)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .animation(ND.Motion.fast, value: showsButtons)
             }
             .overlay {
                 AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
                     .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
             .offset(x: swipeOffset * 0.9)
-            .frame(minWidth: 240, maxWidth: 400, alignment: .top)
+            .frame(minWidth: 260, maxWidth: 420, alignment: .top)
             .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
     }
 }
