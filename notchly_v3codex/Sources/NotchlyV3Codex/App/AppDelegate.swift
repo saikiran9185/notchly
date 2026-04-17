@@ -18,6 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         controller.window?.orderFrontRegardless()
         windowController = controller
+
+        // Shift+Space global hotkey — no Accessibility permission required
+        HotkeyManager.shared.onTrigger = { [weak self] in
+            self?.windowController?.handleHotkeyToggle()
+        }
+        HotkeyManager.shared.register()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

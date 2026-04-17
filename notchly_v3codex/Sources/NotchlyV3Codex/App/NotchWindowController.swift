@@ -149,6 +149,19 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
 
     // MARK: - Notification handlers
 
+    // MARK: - Hotkey
+
+    func handleHotkeyToggle() {
+        let stage = state.currentStage
+        withAnimation(ND.Motion.expand) {
+            if stage == .s0Idle || stage == .s15Hover {
+                state.setStage(.s3Dashboard)
+            } else {
+                state.setStage(.s0Idle)
+            }
+        }
+    }
+
     @objc private func handleStageChange()    { applyWindowFrame(animated: true) }
     @objc private func handleScreenChange()   { state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
     @objc private func handleSettingsChange() { state.recalculate(using: currentScreen()); applyWindowFrame(animated: true) }
