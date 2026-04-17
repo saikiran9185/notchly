@@ -99,7 +99,7 @@ struct Stage4ChatView: View {
                                 .padding(.vertical, ND.Space.sm)
                             }
                             .frame(maxHeight: 160)
-                            .onChange(of: messages.count) { _ in
+                            .onChange(of: messages.count) { _, _ in
                                 if let last = messages.last {
                                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                                 }

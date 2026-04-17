@@ -77,7 +77,7 @@ struct Stage1TimerView: View {
                     .padding(.horizontal, ND.Space.lg)
                     .onAppear { startCycle() }
                     .onDisappear { stopCycle() }
-                    .onChange(of: showsButtons) { hovering in
+                    .onChange(of: showsButtons) { _, hovering in
                         hovering ? stopCycle() : startCycle()
                     }
 

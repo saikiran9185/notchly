@@ -57,6 +57,7 @@ final class NotchState: ObservableObject {
     private var continuityTimer: Timer?
     private var scrollResetTimer: Timer?
     private var volumeCollapseTimer: Timer?
+    private var taskTickTimer: Timer?
     private var scrollAccumulator: CGFloat = 0
     private weak var settings: SettingsManager?
 
@@ -90,15 +91,33 @@ final class NotchState: ObservableObject {
         activeTask = tasks.first { $0.status == "active" }
         pendingTasks = tasks.filter { $0.status == "pending" }
 
-        // Update timer stage content if there's an active task
         if let task = activeTask {
-            currentMessage = task.title
-            currentTimerLabel = task.timerLabel
-            timerProgress = CGFloat(min(1.0, max(0, Double(task.duration_minutes - task.minutesLeft) / Double(max(1, task.duration_minutes)))))
-            if currentStage == .s0Idle {
-                setStage(.s1Timer)
-            }
+            refreshTaskDisplay(task)
+            startTaskTick()
+            if currentStage == .s0Idle { setStage(.s1Timer) }
+        } else {
+            stopTaskTick()
         }
+    }
+
+    private func refreshTaskDisplay(_ task: ScheduleTask) {
+        currentMessage = task.title
+        currentTimerLabel = task.timerLabel
+        let done = task.duration_minutes - task.minutesLeft
+        timerProgress = CGFloat(min(1.0, max(0, Double(done) / Double(max(1, task.duration_minutes)))))
+    }
+
+    private func startTaskTick() {
+        taskTickTimer?.invalidate()
+        taskTickTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self, let task = self.activeTask, !self.timerPaused else { return }
+            self.refreshTaskDisplay(task)
+        }
+    }
+
+    private func stopTaskTick() {
+        taskTickTimer?.invalidate()
+        taskTickTimer = nil
     }
 
     func applyAlerts(_ alerts: [PendingAlert]) {
@@ -118,6 +137,27 @@ final class NotchState: ObservableObject {
         scrollAccumulator = 0
         continuityMessage = nil
         setStage(.s0Idle)
+    }
+
+    // MARK: - Card context
+    var cardIcon: String {
+        if activeTask != nil { return "checklist" }
+        switch currentAlertType {
+        case "calendar": return "calendar"
+        case "reminder": return "bell.fill"
+        case "notion":   return "doc.text.fill"
+        case "ai":       return "sparkles"
+        default:         return "bell.badge.fill"
+        }
+    }
+
+    var cardIconColorName: String {
+        if activeTask != nil { return "green" }
+        switch currentAlertType {
+        case "calendar": return "blue"
+        case "ai":       return "purple"
+        default:         return "orange"
+        }
     }
 
     // MARK: - Stage management
@@ -382,5 +422,6 @@ final class NotchState: ObservableObject {
         continuityTimer?.invalidate()
         scrollResetTimer?.invalidate()
         volumeCollapseTimer?.invalidate()
+        taskTickTimer?.invalidate()
     }
 }

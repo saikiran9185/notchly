@@ -1,1 +1,5 @@
-[]
+[
+  {"id":"demo1","title":"Build Notchly UI","duration_minutes":45,"status":"active","project":"Notchly","priority":1,"started_at":"2026-04-17T16:28:45Z"},
+  {"id":"demo2","title":"Review design tokens","duration_minutes":30,"status":"pending","project":"Notchly"},
+  {"id":"demo3","title":"Test all gestures","duration_minutes":20,"status":"pending"}
+]

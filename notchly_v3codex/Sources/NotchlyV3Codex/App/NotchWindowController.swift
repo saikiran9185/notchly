@@ -199,7 +199,12 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
     }
 
     private func builtinScreen() -> NSScreen? {
-        NSScreen.screens.first { screen in
+        // Primary: the notch display always has auxiliaryTopLeftArea
+        if let s = NSScreen.screens.first(where: {
+            $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil
+        }) { return s }
+        // Fallback: IOKit built-in flag
+        return NSScreen.screens.first { screen in
             guard let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
             return CGDisplayIsBuiltin(CGDirectDisplayID(n.uint32Value)) != 0
         }

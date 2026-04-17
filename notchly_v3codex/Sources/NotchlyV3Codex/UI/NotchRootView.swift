@@ -114,7 +114,9 @@ struct NotchRootView: View {
                 leftAction:   state.leftAction,
                 centerAction: state.centerAction,
                 rightAction:  state.rightAction,
-                swipeOffset:  state.swipeOffset
+                swipeOffset:  state.swipeOffset,
+                icon:         state.cardIcon,
+                iconColor:    cardIconColor
             )
 
         case .s3Dashboard:
@@ -140,6 +142,17 @@ struct NotchRootView: View {
                 nextEvent:    state.nextCalEvent,
                 memory:       state.workingMemory
             )
+        }
+    }
+
+    // MARK: - Card helpers
+
+    private var cardIconColor: SwiftUI.Color {
+        switch state.cardIconColorName {
+        case "green":  return ND.Color.green
+        case "blue":   return ND.Color.blue
+        case "purple": return ND.Color.purple
+        default:       return ND.Color.orange
         }
     }
 
