@@ -132,7 +132,14 @@ struct NotchRootView: View {
             )
 
         case .s4Chat:
-            Stage4ChatView(dimensions: state.dimensions)
+            Stage4ChatView(
+                dimensions:   state.dimensions,
+                activeTask:   state.activeTask,
+                pendingTasks: state.pendingTasks,
+                currentEvent: state.currentCalEvent,
+                nextEvent:    state.nextCalEvent,
+                memory:       state.workingMemory
+            )
         }
     }
 
