@@ -55,7 +55,7 @@ struct Stage1VolumeView: View {
                 AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
                     .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
-            .frame(width: 240)
+            .frame(width: 240, height: max(dimensions.notchHeight + 30, 60))
             .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
     }
 

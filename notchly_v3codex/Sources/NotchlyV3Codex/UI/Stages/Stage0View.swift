@@ -6,8 +6,6 @@ struct Stage0View: View {
     var hasActiveTask:   Bool = false
     var isPlaying:       Bool = false
 
-    @State private var dotScale: CGFloat = 1.0
-
     var dotColor: SwiftUI.Color {
         if hasPendingAlert { return ND.Color.orange }
         if hasActiveTask   { return ND.Color.green  }
@@ -25,24 +23,9 @@ struct Stage0View: View {
             .fill(SwiftUI.Color.black)
             .frame(width: settings.collapsedWidth, height: settings.collapsedHeight)
             .overlay(alignment: .bottom) {
-                // Status dot with smooth pulse
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 4, height: 4)
-                    .scaleEffect(dotScale)
-                    .opacity(shouldPulse ? 1 : 0.35)
+                NStatusDot(color: dotColor, pulse: shouldPulse)
                     .padding(.bottom, 7)
                     .animation(ND.Motion.micro, value: dotColor)
-                    .animation(ND.Motion.micro, value: shouldPulse)
-                    .onAppear { animateDot() }
-                    .onChange(of: shouldPulse) { _ in animateDot() }
             }
-    }
-
-    private func animateDot() {
-        guard shouldPulse else { dotScale = 1.0; return }
-        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-            dotScale = 1.6
-        }
     }
 }

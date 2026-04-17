@@ -3,7 +3,7 @@ import Foundation
 struct ChatService {
     private static let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private static let apiKey   = "REDACTED_KEY"
-    private static let model    = "anthropic/claude-3-haiku"
+    private static let model    = "anthropic/claude-3-haiku-20240307"
 
     struct Message: Codable {
         let role: String
@@ -29,9 +29,10 @@ struct ChatService {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.setValue("Bearer \(apiKey)",  forHTTPHeaderField: "Authorization")
-        req.setValue("application/json",  forHTTPHeaderField: "Content-Type")
-        req.setValue("Notchly",           forHTTPHeaderField: "X-Title")
+        req.setValue("Bearer \(apiKey)",      forHTTPHeaderField: "Authorization")
+        req.setValue("application/json",      forHTTPHeaderField: "Content-Type")
+        req.setValue("https://notchly.app",   forHTTPHeaderField: "HTTP-Referer")
+        req.setValue("Notchly",               forHTTPHeaderField: "X-Title")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         URLSession.shared.dataTask(with: req) { data, _, error in
