@@ -42,6 +42,10 @@ struct NotchRootView: View {
             Button("Cycle Demo Stage") {
                 withAnimation(ND.Motion.expand) { state.cycleDemoStage() }
             }
+            Divider()
+            Button("Quit Notchly") {
+                NSApplication.shared.terminate(nil)
+            }
         }
         .gesture(swipeGesture)
         .animation(ND.Motion.expand, value: state.currentStage)

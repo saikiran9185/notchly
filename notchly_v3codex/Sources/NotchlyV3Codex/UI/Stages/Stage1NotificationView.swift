@@ -84,8 +84,23 @@ struct Stage1NotificationView: View {
                 AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
                     .stroke(ND.Color.stroke, lineWidth: 0.5)
             }
+            .overlay {
+                // Swipe color wash — green right, warm gray left (never red)
+                AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card)
+                    .fill(swipeWashColor)
+                    .allowsHitTesting(false)
+            }
             .offset(x: swipeOffset * 0.9)
             .frame(minWidth: 260, maxWidth: 420, alignment: .top)
             .contentShape(AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.card))
+    }
+
+    private var swipeWashColor: SwiftUI.Color {
+        let ratio = min(abs(swipeOffset) / 40.0, 1.0)
+        if swipeOffset > 0 {
+            return SwiftUI.Color(red: 0.11, green: 0.62, blue: 0.46).opacity(ratio * 0.55)
+        } else {
+            return SwiftUI.Color(red: 0.31, green: 0.31, blue: 0.31).opacity(ratio * 0.40)
+        }
     }
 }

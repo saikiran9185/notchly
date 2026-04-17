@@ -54,10 +54,11 @@ enum ND {
 
     // MARK: Animation
     enum Motion {
-        static let micro  = Animation.easeOut(duration: 0.15)
-        static let fast   = Animation.easeOut(duration: 0.22)
-        static let spring = Animation.spring(response: 0.35, dampingFraction: 0.78)
-        static let expand = Animation.spring(response: 0.42, dampingFraction: 0.80)
+        static let micro    = Animation.easeOut(duration: 0.15)
+        static let fast     = Animation.easeOut(duration: 0.22)
+        static let spring   = Animation.spring(response: 0.35, dampingFraction: 0.78)
+        static let expand   = Animation.spring(response: 0.42, dampingFraction: 0.80)
+        static let suckBack = Animation.spring(response: 0.28, dampingFraction: 0.90)
     }
 
     // MARK: Shapes

@@ -15,6 +15,7 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
     private let calendarManager   = CalendarManager()
 
     private weak var trackingOverlay: NotchTrackingView?
+    private var hoverExitWorkItem: DispatchWorkItem?
 
     init(settings: SettingsManager) {
         let panel = NotchPanel()
@@ -40,8 +41,18 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
         // without needing Accessibility permission
         let tracker = NotchTrackingView()
         tracker.translatesAutoresizingMaskIntoConstraints = false
-        tracker.onEnter = { [weak self] in self?.state.setHover(true) }
-        tracker.onExit  = { [weak self] in self?.state.setHover(false) }
+        tracker.onEnter = { [weak self] in
+            guard let self else { return }
+            self.hoverExitWorkItem?.cancel()
+            self.hoverExitWorkItem = nil
+            self.state.setHover(true)
+        }
+        tracker.onExit = { [weak self] in
+            guard let self else { return }
+            let work = DispatchWorkItem { [weak self] in self?.state.setHover(false) }
+            self.hoverExitWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20, execute: work)
+        }
         tracker.onScroll = { [weak self] event in
             guard let self else { return }
             let phase = event.phase

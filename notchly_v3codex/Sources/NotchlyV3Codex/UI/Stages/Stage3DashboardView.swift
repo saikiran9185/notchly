@@ -12,6 +12,8 @@ struct Stage3DashboardView: View {
     let notionTasks:   [NotionTask]
     let memory:        WorkingMemory
 
+    @State private var completedTaskIDs: Set<String> = []
+
     var body: some View {
         AsymmetricRoundedRect(topRadius: 0, bottomRadius: ND.Radius.large)
             .fill(SwiftUI.Color.black)
@@ -114,21 +116,43 @@ struct Stage3DashboardView: View {
                             VStack(alignment: .leading, spacing: ND.Space.sm) {
                                 NLabel(text: "Up Next")
                                 ForEach(pendingTasks.prefix(3)) { task in
+                                    let done = completedTaskIDs.contains(task.id)
                                     HStack(spacing: ND.Space.sm) {
-                                        Circle()
-                                            .stroke(ND.Color.muted, lineWidth: 1)
-                                            .frame(width: 5, height: 5)
+                                        // Tappable circle tick button
+                                        ZStack {
+                                            Circle()
+                                                .stroke(done ? ND.Color.green : ND.Color.muted, lineWidth: 1)
+                                                .frame(width: 14, height: 14)
+                                            if done {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 8, weight: .bold))
+                                                    .foregroundStyle(ND.Color.green)
+                                            }
+                                        }
+                                        .onTapGesture {
+                                            withAnimation(ND.Motion.fast) {
+                                                completedTaskIDs.insert(task.id)
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                DataStore.shared.markTaskDone(task.id)
+                                            }
+                                        }
+
                                         Text(task.title)
                                             .font(ND.Font.caption())
-                                            .foregroundStyle(ND.Color.secondary)
+                                            .foregroundStyle(done ? ND.Color.tertiary : ND.Color.secondary)
+                                            .strikethrough(done, color: ND.Color.tertiary)
                                             .lineLimit(1)
+                                            .animation(ND.Motion.fast, value: done)
                                         Spacer()
-                                        if let p = task.priority, p == 1 {
+                                        if let p = task.priority, p == 1, !done {
                                             Image(systemName: "exclamationmark")
                                                 .font(.system(size: 9, weight: .bold))
                                                 .foregroundStyle(ND.Color.orange)
                                         }
                                     }
+                                    .opacity(done ? 0.45 : 1.0)
+                                    .animation(ND.Motion.fast, value: done)
                                 }
                             }
                         }

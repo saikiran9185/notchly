@@ -181,7 +181,10 @@ final class NotchState: ObservableObject {
     // MARK: - Actions
     var leftAction: NotchAction? {
         switch currentStage {
-        case .s1Notification: return .init(id: "dismiss", title: "Skip")
+        case .s1Notification:
+            // Use dynamic label from alert schema if present
+            let label = pendingAlerts.first?.action_left ?? "Skip"
+            return .init(id: "dismiss", title: label)
         case .s1Timer: return .init(id: "take_break", title: "Break")
         case .s2Card: return .init(id: "later", title: "Later")
         default: return nil
@@ -197,7 +200,9 @@ final class NotchState: ObservableObject {
 
     var rightAction: NotchAction? {
         switch currentStage {
-        case .s1Notification: return .init(id: "done_alert", title: "Got it")
+        case .s1Notification:
+            let label = pendingAlerts.first?.action_right ?? "Got it"
+            return .init(id: "done_alert", title: label)
         case .s1Timer: return .init(id: "done_task", title: "Done")
         case .s2Card: return .init(id: "done_card", title: "Done")
         default: return nil
@@ -255,6 +260,14 @@ final class NotchState: ObservableObject {
             currentMessage = "Task complete"
             currentTimerLabel = "Done"
             timerProgress = 1.0
+            // Load next pending task immediately before collapsing
+            let remaining = pendingTasks
+            if let next = remaining.first {
+                currentMessage = next.title
+                currentTimerLabel = next.timerLabel
+                timerProgress = 0
+                continuityMessage = "\(activeTask?.title ?? "Task") done · \(next.title) loading"
+            }
             setStage(.s0Idle)
         case "take_break":
             currentMessage = "Break started"
