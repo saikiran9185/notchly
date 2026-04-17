@@ -1,921 +1,1286 @@
-# Notchly — Master Engineering Specification & TODO
-**Version:** V3 Codex  
-**Status:** Active Development  
-**Audience:** Senior macOS Engineer, Product Lead, QA  
-**Last Updated:** 2026-04-17
-
----
-
-## 0. WHAT THIS APP IS
-
-Notchly is a native macOS assistant that lives permanently in the MacBook Pro notch. It is not a menu bar app, not a status bar icon, not a floating widget. It is a dark panel that grows downward from the physical camera cutout, shows contextual information, and collapses back to near-invisible when not needed.
-
-**Core principle:** The app speaks first. You respond with one gesture. Then it's gone.
-
----
-
-## 1. CURRENT BUILD STATE
-
-### 1.1 What is Built and Working
-| Component | File | Status |
-|-----------|------|--------|
-| NSPanel at .statusBar level (layer 25) | NotchWindowController.swift | ✅ Working |
-| Notch geometry calibration (auxiliaryTopLeftArea) | NotchState.swift | ✅ Working |
-| Stage system (S0→S4) with animated transitions | NotchRootView.swift | ✅ Working |
-| Scroll accumulator with phase tracking | NotchState.swift | ✅ Working |
-| Volume monitor (CoreAudio polling at 0.25s) | VolumeMonitor.swift | ✅ Working |
-| Now Playing (Music + Spotify via DistributedNotificationCenter) | NowPlayingMonitor.swift | ✅ Working |
-| Bluetooth audio device + battery (ioreg) | BatteryMonitor.swift | ✅ Working |
-| Calendar events via EventKit | CalendarManager.swift | ✅ Working |
-| DataStore polling ~/Documents/notchly/v2/ at 15s | DataStore.swift | ✅ Working |
-| Stage 0 — idle pill with pulsing dot | Stage0View.swift | ✅ Working |
-| Stage 1 — notification with swipe offset | Stage1NotificationView.swift | ✅ Working |
-| Stage 1 — timer with progress | Stage1TimerView.swift | ✅ Working |
-| Stage 1 — volume HUD | Stage1VolumeView.swift | ✅ Working |
-| Stage 1.5 — hover card | Stage15HoverView.swift | ✅ Working |
-| Stage 2 — card with left/right/center actions | Stage2CardView.swift | ✅ Working |
-| Stage 3 — dashboard (calendar, music, BT, tasks) | Stage3DashboardView.swift | ✅ Working |
-| Stage 4 — chat UI (stub, no AI backend) | Stage4ChatView.swift | ⚠️ UI only |
-| Settings window | SettingsView.swift | ✅ Working |
-| NSTrackingArea hover (no Accessibility needed) | NotchWindowController.swift | ✅ Working |
-| Continuity banner (action confirmation) | ContinuityBanner.swift | ✅ Working |
-| AsymmetricRoundedRect (notch-flush shape) | AsymmetricRoundedRect.swift | ✅ Working |
-| ND design token system (colors, fonts, spacing) | NotchlyDesign.swift | ✅ Working |
-
-### 1.2 What is Stubbed / Incomplete
-| Feature | Status | Priority |
-|---------|--------|----------|
-| Stage 4 chat — real AI backend (Claude/OpenClaw) | Stub only | P0 |
-| Swipe left/right gesture on notifications | Not implemented | P0 |
-| Global hotkey ⌘⇧Space for Stage 4 | Not implemented | P0 |
-| Scroll-to-stage gesture (two-finger trackpad) | Phase-aware but no scroll→stage from global monitor | P1 |
-| Auto-collapse Stage 1 after 30s | Implemented (30s timer) | ✅ |
-| Idle detection (Mac lid open after 5h) | Not implemented | P1 |
-| Context detection (frontmost app awareness) | Not implemented | P1 |
-| Self-learning algorithm (W score per notification type) | Not implemented | P1 |
-| OpenClaw plugin bridge (reads ~/Documents/notchly/v2/) | DataStore exists, no OpenClaw writer | P1 |
-| macOS launchd auto-start plist | Not implemented | P2 |
-| Week summary (visible W score trend) | Not implemented | P2 |
-| Haptic feedback on swipe commit | Not implemented | P2 |
-| Timer tap-to-pause (Stage 1 Timer) | UI exists, wired in NotchState | ✅ |
-| Dynamic button placement (most-pressed goes right) | Not implemented | P2 |
-| Stage 2B — missed notifications list with inline reply | Not implemented | P2 |
-| Context peek in Stage 4 (schedule strip on schedule keywords) | Not implemented | P3 |
-| App-aware action buttons (Blender → "Open Blender") | Not implemented | P3 |
-| Rejection count + Stage 1.5 Diagnosis Mode | Not implemented | P3 |
-| Snooze / postpone that actually writes back to DataStore | Partial (marks done, doesn't reschedule) | P1 |
-
----
-
-## 2. STAGE BEHAVIOR SPEC
-
-Every stage must match this spec exactly. Width/height in points (2× for Retina pixels).
-
-### S0 — Idle (Default)
-**Dimensions:** 180 × 32 pt  
-**Position:** Centered on notch, top of screen, flush with camera cutout  
-**Appearance:** Pure black `AsymmetricRoundedRect(topRadius:0, bottomRadius:15)`. Single 4pt dot centered at bottom, 7pt padding from edge.
-
-**Dot states:**
-- `hasPendingAlert` → orange dot, pulsing (scale 1.0→1.6, 1.1s easeInOut repeat)  
-- `hasActiveTask` → green dot, pulsing  
-- `isPlayingMusic` → blue dot, pulsing  
-- All clear → muted gray dot, static (opacity 0.35)  
-
-**Behavior:**
-- No text, no labels. Purely visual.
-- Double-tap → jump directly to S4 Chat (skips S1/S2/S3)
-- Single tap → S15 Hover
-- Scroll down (two-finger trackpad, >12pt delta) → S15 Hover
-- If external monitor is primary: window must track built-in screen notch only
-
-**TODO:**
-- [ ] Confirm dot is visible against physical notch on all MacBook Pro models (14", 16")
-- [ ] Test dot pulse on M3 Pro (notch height = 38pt vs M1 = 38pt; check inset values)
-- [ ] Double-tap to S4 currently requires exact double-tap timing — tune `count: 2` threshold or use `TapGesture` sequence
-
----
-
-### S1 — Notification
-**Dimensions:** 350 × (widgetHeight+21) pt, min 58pt height  
-**Auto-collapse:** 30 seconds after appearing, collapses to S0 silently  
-**Hover pause:** If cursor enters notch zone, cancel auto-collapse timer  
-
-**Appearance:** Single line message with icon badge on left. Alert type drives icon and badge color:
-- `nudge` → clock.fill, amber  
-- `calendar` → calendar, blue  
-- `reminder` → bell.fill, orange  
-- `notion` → checkmark.square, purple  
-- `ai` → sparkles, teal  
-
-**On hover — buttons appear:**
-- Slide down from inside the bar (not a popup, the bar itself grows taller)
-- Full width of notification bar, split two equal buttons
-- Left button = `leftAction` (e.g. "Skip")  
-- Right button = `rightAction` (e.g. "Got it")
-- Hint text: `← skip · got it →` shown in tertiary color when first hovering
-
-**Swipe gesture (two-finger horizontal, cursor in notch zone):**
-- Swipe right (>30pt delta) → fires right action (primary/most-pressed)
-- Swipe left (>30pt delta) → fires left action (dismiss/skip)
-- Below 30pt → spring back
-- Visual: bar slides in swipe direction with `swipeOffset`, max ±80pt before snap
-- On commit: notification "sucks back" into notch (scale to 0, opacity to 0, 0.22s ease-in)
-- Right swipe: green wash during drag. Left swipe: warm gray wash (not red)
-
-**TODO:**
-- [ ] **P0** Implement two-finger horizontal swipe gesture on notch zone — currently only vertical scroll is handled
-- [ ] **P0** Implement swipe spring-back when delta < 30pt
-- [ ] **P0** Implement color wash (green/gray) proportional to swipe delta
-- [ ] **P0** Implement "suck back" commit animation
-- [ ] **P0** Show hint text `← skip · got it →` on first hover (once per session, not every hover)
-- [ ] **P1** `action_left` / `action_right` fields in `PendingAlert` schema — use these to override default button labels dynamically
-- [ ] **P1** Notification type drives icon — wire `alertType` to icon map in `Stage1NotificationView`
-- [ ] **P1** Priority field drives display order — P1 alerts interrupt even during active task (bypass idle check)
-- [ ] **P2** Continuity banner shows confirmed action for 2.5s after swipe commit
-
----
-
-### S1 — Timer (Active Task)
-**Dimensions:** 280–360 × (widgetHeight+32) pt  
-**Behavior:** Shows active task title, timer label, arc progress ring
-
-**Timer display cycles every 4s (auto, pauses on hover):**
-1. Countdown: "24m left"
-2. Elapsed: "36m in"  
-3. Percentage: "60% done"
-
-**Tap the timer number/label → pause/resume**
-- Paused state: timer label → "Paused ⏸", dot color → gray
-- Resumed: restore countdown, dot color → green
-
-**Hover → buttons appear (same slide mechanic as S1 Notification):**
-- Left: "Break" — starts a break task, collapses to S0
-- Right: "Done" — marks task done in DataStore, loads next task
-
-**Swipe right → "Done", swipe left → "Break"**
-
-**TODO:**
-- [ ] **P0** Arc progress ring — currently using `timerProgress` float but no arc drawn in view, only in `Stage1TimerView`. Verify arc renders correctly
-- [ ] **P0** Timer cycle (countdown→elapsed→percent) — currently static label. Implement rotation `@State var cycleIndex` with 4s `Timer`
-- [ ] **P0** Swipe gestures on timer stage (same as Notification)
-- [ ] **P1** When `timerPaused == true`, dot should go gray/static — wire to `Stage0View` dot state
-- [ ] **P1** "Done" action should find next pending task and preload it into `currentMessage` before collapsing — feels instant
-- [ ] **P2** "Break" should create a `ScheduleTask(status: "break")` in DataStore with a 10m duration by default
-
----
-
-### S1 — Volume HUD
-**Dimensions:** 220 × (notchHeight+30) pt, min 60pt  
-**Trigger:** System volume change detected by `VolumeMonitor` (polling every 0.25s, threshold >1%)  
-**Auto-collapse:** 2.5s after last volume change  
-**No hover buttons — this is read-only**
-
-**Appearance:**
-- Icon left: speaker SF symbol (1→2→3 waves by level, slash if muted)
-- Bar center: 4pt tall capsule, gradient fills proportionally
-  - Normal: green→green (opacity 0.7→1.0)
-  - Loud (>80%): green→orange
-  - Muted: red (opacity 0.4→1.0) at 0 width
-- Label right: "47%" in SF Mono 11pt, or "Muted"
-
-**TODO:**
-- [ ] **P1** Volume HUD should not interrupt S1 Notification/Timer — if a notification is showing, volume change updates silently (icon in corner?) rather than hijacking the stage
-- [ ] **P1** Test mute toggle detection — `muteVal` from CoreAudio fires on ⌥ + volume key mute?
-- [ ] **P2** Tap anywhere on volume HUD → go to S0 (currently wired via `handlePrimaryTap`)
-
----
-
-### S15 — Hover
-**Dimensions:** 340 × 70 pt  
-**Trigger:** Cursor enters notch tracking zone (NSTrackingArea, .activeAlways)  
-**Exit:** Cursor leaves zone → collapse to S0 after 200ms debounce  
-
-**Content — context-aware, shows most relevant of:**
-1. Active task: "⬤ Task title · 24m left" + next task preview
-2. Current calendar event: event title + time remaining
-3. Now playing: song · artist (scrolling marquee if too long)
-4. Bluetooth: device name + battery bar
-5. Missed count badge: "● 3 missed" in orange if pendingAlerts > 0
-
-**Scroll hint:**  
-Small `chevron.down` icon at bottom center, 0.4 opacity, indicates scroll-to-expand
-
-**TODO:**
-- [ ] **P0** Hover exit debounce — currently `setHover(false)` fires immediately on exit, causing flicker if cursor brushes edge. Add 200ms delay before collapse
-- [ ] **P1** Context priority order — implement ranked display: active task > current event > now playing > BT > free
-- [ ] **P1** Missed count badge — if `pendingAlerts.count > 0`, show orange dot + count in top-right of hover card. Tapping this goes to S2B (missed list)
-- [ ] **P2** Marquee scroll for long song titles (>28 chars)
-- [ ] **P2** Scroll hint chevron should animate (subtle bob, 2s repeat)
-
----
-
-### S2 — Card
-**Dimensions:** 380 × 180 pt  
-**Trigger:** Single tap on S15 Hover, or dragging to medium depth  
-
-**Content:**
-- Large icon/badge (36×36, RoundedRectangle)
-- Title (task name or alert title) — SF Pro Medium 15pt
-- Subtitle (project name, event location, or secondary message) — SF Pro 12pt tertiary
-- Action buttons: Left / Center / Right (center only for calendar RSVP)
-- "Scroll to expand" hint at bottom
-
-**Action button behavior:**
-- Swipe right → right action
-- Swipe left → left action
-- Center only reachable by click (never swipe)
-
-**TODO:**
-- [ ] **P1** S2B mode — when user taps "3 missed" from S15, show scrollable list of missed alerts. Each item is a row with title + inline quick-reply buttons that expand on row-tap
-- [ ] **P1** Swipe gesture at this stage mirrors S1 swipe
-- [ ] **P2** App-specific icon — if task has a project name matching a known app (Blender, Figma, Xcode), show that app's icon in the badge slot
-- [ ] **P2** Calendar RSVP flow — if alert type is `calendar`, show Going/Later/Decline as three buttons
-
----
-
-### S3 — Dashboard
-**Dimensions:** 510 × (expandedHeight+110) pt, min 340pt  
-**Trigger:** Long scroll, or S2 → tap  
-**Content columns:** Today's schedule left, live data right  
-
-**Left column — Schedule:**
-- Header: "Today" + date (e.g. "Thu 17")
-- Active task row: green dot + title + timer arc + "●" Done circle button (tap = mark done instantly)
-- Pending tasks: up to 3 rows, each with "●" circle button to tick off
-- "See all" link if more than 3 pending
-- Notion tasks section (In Progress first, then To Do, up to 3)
-
-**Right column — Live:**
-- Calendar: current event (title + time remaining) or next event (title + "in Xm")
-- Now Playing: song + artist + mini progress bar
-- Bluetooth: device + battery colored bar (red < 20%)
-- AI goal: purple card with `workingMemory.todays_goal`
-
-**Footer:** "Double-tap anywhere to ask Notchly"
-
-**TODO:**
-- [ ] **P1** Task circle buttons — currently no tap handler on individual task rows in S3. Add `.onTapGesture` to each task row that calls `DataStore.shared.markTaskDone(task.id)` and animates row away
-- [ ] **P1** Notion "In Progress" row — show inline progress indicator (not just a label)
-- [ ] **P1** S3 should not auto-collapse — only collapses on scroll-up or explicit escape
-- [ ] **P2** "See all" tasks → does not navigate anywhere currently. Should expand S3 height or open system app
-- [ ] **P2** Calendar section should show next 2 events if none is current (not just one)
-- [ ] **P2** Missed events count — if `missedCalCount > 0` show "⚠️ N missed today" in red below calendar section
-- [ ] **P3** Mini now-playing progress bar — needs actual track position/duration (MediaRemote private API or polling approach)
-- [ ] **P3** Add "Reschedule" button to each pending task row
-
----
-
-### S4 — Chat
-**Dimensions:** 510 × 320 pt  
-**Trigger:** Double-tap from S0, OR ⌘⇧Space from any app  
-**Session lock:** Stays open if conversation active or action card unacknowledged  
-**Auto-close:** 60s idle (no input, no pending response), or cursor leaves for 60s  
-**Close:** Esc, or cursor away for 60s with no active session  
-
-**Content:**
-- Header: sparkles icon + "Ask Notchly" + loading spinner when thinking
-- Message list: user bubbles (right-aligned, surface bg) + AI bubbles (left-aligned)
-- Input bar: TextField + send button (appears when draft not empty)
-- Placeholder hint: "What should I focus on next?"
-
-**Context peek (when schedule keyword detected):**
-- User types "tomorrow", "move", "reschedule", "when", "free" → faded schedule strip appears above input showing next 3 events
-- Strip fades in/out based on keyword presence, no AI call needed
-
-**AI backend (current state: stub):**
-- Currently returns hardcoded "Got it. I'll help you focus on that."
-- Needs: Claude API integration OR OpenClaw bridge
-
-**TODO:**
-- [ ] **P0** Wire ⌘⇧Space global hotkey — use `CGEventTap` or `Carbon.RegisterEventHotKey`. Must work without Accessibility permission via `CGEventTapCreate` at `kCGHIDEventTap` level
-- [ ] **P0** 60-second idle auto-close — add `idleTimer` that resets on every keystroke/message. Active session (unread AI response) pins window
-- [ ] **P0** Real AI backend — Claude API (`claude-sonnet-4-6`) with system prompt including current task, pending alerts, calendar events, working memory
-- [ ] **P1** Context peek — keyword detection on `draft.onChange`, show/hide `CalEventStripView` (compact 3-event list above input)
-- [ ] **P1** OpenClaw bridge — if `~/Documents/notchly/v2/openclaw_response.json` exists and modified < 30s, prefer it over Claude API
-- [ ] **P2** Action cards — AI response can embed structured JSON to create/modify tasks. Render as a card inside the chat bubble with a "Confirm" button
-- [ ] **P2** Chat history — persist last 10 messages to `~/Documents/notchly/v2/chat_history.json`
-- [ ] **P3** Animate card expansion when OpenClaw response is long
-
----
-
-## 3. GESTURE SYSTEM
-
-All gestures require cursor to be inside the notch hover zone (600 × 120 pt, centered on notch).
-
-### 3.1 Two-Finger Vertical Scroll (Trackpad)
-| Delta | Action |
-|-------|--------|
-| 0 to +11 | No stage change |
-| +12 to +35 | → S15 Hover |
-| +36 to +79 | → S2 Card |
-| +80 and above | → S3 Dashboard |
-| −16 and below | → S0 Idle (collapse) |
-
-**Phase rules (currently implemented):**
-- `.ended` / `.cancelled` → schedule 0.45s reset timer, do not process delta
-- `momentumPhase` not empty → ignore (inertia scroll)
-- Mouse wheel (no phase) → 0.35s idle reset timer
-
-**TODO:**
-- [ ] **P1** Test scroll-to-stage feel. Current thresholds (12/36/80/-16) may need tuning on different trackpad speeds. Consider `sensitivity` setting in SettingsManager
-- [ ] **P1** On external monitor setup: global scroll monitor uses `cursorIsInHoverZone()` which checks `screenMidX` — verify this uses built-in screen midX, not external
-- [ ] **P2** Magic Mouse: horizontal swipe via `scrollingDeltaX` — should trigger swipe left/right action at any active-button stage
-
-### 3.2 Two-Finger Horizontal Swipe (Trackpad) — NOT YET IMPLEMENTED
-**Target stages:** S1 Notification, S1 Timer, S2 Card  
-**Threshold:** 30pt committed, <30pt spring-back  
-**Implementation approach:** Monitor `scrollingDeltaX` in `registerScroll`. If `abs(deltaX) > abs(deltaY)` treat as horizontal swipe, route to `applySwipeOffset`/`commitSwipeIfNeeded`.
-
-**TODO:**
-- [ ] **P0** Add `deltaX` parameter to `registerScroll`
-- [ ] **P0** When `abs(deltaX) > abs(deltaY) && abs(deltaX) > 4`: route to `applySwipeOffset(deltaX)` instead of vertical stage logic
-- [ ] **P0** `commitSwipeIfNeeded` already exists — confirm threshold 40pt → change to 30pt
-- [ ] **P0** Add color wash to `Stage1NotificationView` — overlay with green/gray `.blendMode(.overlay)` at opacity proportional to `abs(swipeOffset)/80`
-- [ ] **P0** Add "suck-back" animation: `withAnimation(.easeIn(duration: 0.22)) { swipeOffset = stage.width * sign }`
-
-### 3.3 Single Tap
-| Stage | Result |
-|-------|--------|
-| S0 | → S15 Hover |
-| S1 Notification | → S2 Card |
-| S1 Timer | → S2 Card |
-| S1 Volume | → S0 |
-| S15 Hover | → S2 Card |
-| S2 Card | → S3 Dashboard |
-| S3 Dashboard | → S0 |
-| S4 Chat | no-op (handled by text field) |
-
-**TODO:**
-- [ ] **P1** Tap on missed count badge in S15 → should go to S2B (missed list mode), not S2 Card
-
-### 3.4 Double-Tap
-| Stage | Result |
-|-------|--------|
-| Any | → S4 Chat |
-
-**Note:** If S1 is active, double-tap goes to S4, overriding S1. Use ⌘⇧Space to reach S4 without disturbing S1.
-
-**TODO:**
-- [ ] **P1** Double-tap on an active S1 alert currently works but loses the alert. Should the alert persist in S4 as context?
-
-### 3.5 Swipe Left/Right (on buttons)
-Already described per stage above. Summary:
-- Requires `leftAction` or `rightAction` to be non-nil
-- `commitSwipeIfNeeded(predictedEnd:)` dispatches to `perform(_ action:)`
-- 30pt threshold (currently 40pt — change to 30)
-
-### 3.6 Context Menu (Right-Click)
-- "Open Settings" → `NotificationCenter.post(.notchOpenSettings)`
-- "Reset to Idle" → `state.reset()`
-- "Cycle Demo Stage" → `state.cycleDemoStage()`
-
-**TODO:**
-- [ ] **P2** Add "Dismiss Alert" to context menu when S1 Notification is active
-- [ ] **P2** Add "Quit Notchly" to context menu (currently requires Activity Monitor)
-
----
-
-## 4. WINDOW & POSITIONING
-
-### 4.1 NSPanel Configuration
-```
-styleMask:          [.borderless, .nonactivatingPanel]
-level:              .statusBar  (CGWindowLevel 25)
-collectionBehavior: [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-isOpaque:           false
-hasShadow:          false
-backgroundColor:    .clear
-hidesOnDeactivate:  false
-canBecomeKey:       false
-canBecomeMain:      false
-```
-
-### 4.2 Frame Calculation
-```
-x = screenMidX - (width / 2) + horizontalOffset
-y = screenMaxY - height
-```
-
-**Built-in screen detection:** `CGDisplayIsBuiltin()` — always prefer built-in over external. If no built-in (desktop Mac), use `NSScreen.main`.
-
-**Notch geometry:** `auxiliaryTopLeftArea.maxX` to `auxiliaryTopRightArea.minX` — exact notch bounds. Falls back to inferred width by screen width (1600pt→162, else→150/184).
-
-**TODO:**
-- [ ] **P1** When external monitor is primary (user's current setup: X=3227), the window is appearing on external monitor. Fix: `currentScreen()` should always return built-in first, then main, then first. Verify `builtinScreen()` is returning correct result
-- [ ] **P1** Screen arrangement change (`NSApplication.didChangeScreenParametersNotification`) — verify `recalculate(using:)` fires and `applyWindowFrame` re-positions correctly
-- [ ] **P2** Stage transitions: `applyWindowFrame(animated: true)` uses 0.28s `easeInEaseOut` for frame. SwiftUI uses `ND.Motion.expand` for content. These should be synchronized (same duration)
-- [ ] **P2** When window width changes (S0 180pt → S3 510pt), the `x` recalculates cleanly — verify no positional jump on transition
-
-### 4.3 macOS Version Compatibility
-- Minimum target: macOS 13.0 (Ventura) — notch hardware is M1 Pro and later
-- `safeAreaInsets.top` → notch height. On non-notch Macs this returns 0, fallback to 38pt
-- `requestFullAccessToEvents` requires macOS 14.0+ — `#available` check exists ✅
-- `auxiliaryTopLeftArea` / `auxiliaryTopRightArea` — macOS 12.0+ ✅
-
-**TODO:**
-- [ ] **P1** Test on macOS 13.0 (Ventura) — `auxiliaryTopLeftArea` API availability?
-- [ ] **P1** Test on non-notch MacBook (Air M1) — S0 should fall back gracefully to 180×38 centered on screen top
-
----
-
-## 5. DATA LAYER
-
-### 5.1 File System Contract
-All data lives at `~/Documents/notchly/v2/`:
-
-| File | Schema | Writer | Reader | Poll |
-|------|--------|--------|--------|------|
-| `schedule.json` | `[ScheduleTask]` | OpenClaw Python / DataStore | DataStore | 15s |
-| `pending_alerts.json` | `[PendingAlert]` | OpenClaw Python / DataStore | DataStore | 15s |
-| `working_memory.json` | `WorkingMemory` | OpenClaw Python | DataStore | 15s |
-| `cache/notion_cache.json` | `[NotionTask]` | OpenClaw Python | DataStore | 15s |
-| `chat_history.json` | `[ChatMessage]` | Stage4ChatView | Stage4ChatView | on load |
-| `openclaw_response.json` | `OpenClawResponse` | OpenClaw Python | Stage4ChatView | on demand |
-
-### 5.2 ScheduleTask Schema
-```json
-{
-  "id": "uuid",
-  "title": "Curry & Beans logo",
-  "duration_minutes": 90,
-  "due": "2026-04-18T17:00:00Z",
-  "status": "active|pending|done|break",
-  "project": "Client Work",
-  "priority": 1
-}
-```
-
-**TODO:**
-- [ ] **P1** Add `rejection_count: Int` field — increments on "Skip"/"Later" actions. At 3, trigger Diagnosis Mode (S1.5)
-- [ ] **P1** Add `start_time: String?` — actual start timestamp for elapsed calculation
-- [ ] **P1** `minutesLeft` currently returns `duration_minutes` (wrong). Fix: `minutesLeft = duration_minutes - minutesElapsed`. Need `start_time` to compute elapsed
-- [ ] **P2** Add `app_hint: String?` — e.g. "com.blenderfoundation.blender". Stage 2 uses this for app-specific button
-
-### 5.3 PendingAlert Schema
-```json
-{
-  "id": "uuid",
-  "type": "nudge|calendar|reminder|notion|ai",
-  "title": "Sequential Narratives in 10m",
-  "message": "Lecture starts at 2:30 PM, Block A room 204",
-  "created_at": "2026-04-17T14:20:00Z",
-  "priority": 1,
-  "action_left": "Skip",
-  "action_right": "On my way"
-}
-```
-
-**TODO:**
-- [ ] **P1** `action_left` / `action_right` are defined in schema but not used in `NotchState.leftAction` / `rightAction`. Fix: if `action_left` is set on current alert, return that label instead of hardcoded "Skip"
-- [ ] **P1** `priority` field: P1 alerts (priority=1) should bypass idle check — show even if active task is running
-
-### 5.4 DataStore — Known Issues
-- [ ] **P1** `loadAlerts()` parses `priority` but `PendingAlert` has `priority: Int` — confirm schema matches (currently `priority` default not set in JSON samples)
-- [ ] **P1** `markTaskDone` saves but doesn't notify next pending task. After marking done, `applySchedule` should re-fire to pick up next active task
-- [ ] **P1** `dismissAlert` writes synchronously on main thread — move to background queue, write atomically (write to temp file, rename)
-- [ ] **P2** `DataStore.start()` fires `load()` immediately, then every 15s. If file changes between polls (OpenClaw writes), notification is delayed up to 15s. Consider `DispatchSource.makeFileSystemObjectSource` for instant file-change detection
-
----
-
-## 6. SERVICES
-
-### 6.1 VolumeMonitor
-- Polls at 0.25s via `Timer` on main thread ← should be on background queue, dispatch result to main
-- Uses `kAudioObjectPropertyElementMain` (correct for macOS 12+)
-- Detects: volume scalar + mute toggle
-
-**TODO:**
-- [ ] **P1** Move polling timer to `DispatchQueue.global(qos: .utility)` — CoreAudio calls are not main-thread only but polling on main adds latency budget pressure
-- [ ] **P2** `kAudioHardwarePropertyDefaultOutputDevice` PropertyListener instead of polling — event-driven, zero overhead
-
-### 6.2 NowPlayingMonitor
-- Listens to `com.apple.Music.playerInfo` and `com.spotify.client.PlaybackStateChanged`
-- Missing: Apple Podcasts, YouTube in browser (no distributed notification), system audio
-
-**TODO:**
-- [ ] **P2** Add `com.apple.podcasts.notification.playerInfo` observer
-- [ ] **P3** MediaRemote.framework private API for universal "now playing" — covers browser media, Reeder, all MPNowPlayingInfoCenter clients
-
-### 6.3 BatteryMonitor
-- Uses IOBluetooth + ioreg subprocess for battery
-- Polls every 30s
-
-**TODO:**
-- [ ] **P1** `ioreg -r -k BatteryPercent` — this reads ALL devices. If multiple BT devices connected, may pick wrong one. Fix: filter by device address
-- [ ] **P2** Replace subprocess with `IOKit` direct read: `IORegistryEntryCreateCFProperty(entry, "BatteryPercent", ...)` — no process spawn
-- [ ] **P2** Mac's own battery (not BT) is not shown anywhere. Add `IOPMBatteryInfo` read for Mac battery in Stage 3
-
-### 6.4 CalendarManager
-- `EKEventStore` with full access (macOS 14+)
-- Fetches today's events, refreshes every 60s
-- Filters `isAllDay` events
-
-**TODO:**
-- [ ] **P1** Add tomorrow's events to `nextEvent` logic — if no more events today after current time, peek at tomorrow
-- [ ] **P1** Calendar source filtering — user may want to exclude personal calendars. Add `CalendarManager.excludedCalendarIDs: Set<String>` in SettingsManager
-- [ ] **P2** Event notifications — when next event is <10 min away, create a `PendingAlert` and write to DataStore. This closes the loop: calendar feeds alerts, DataStore polls alerts, S1 shows them
-
----
-
-## 7. OPENCLAW INTEGRATION
-
-OpenClaw is the optional power layer. Without it, Notchly works standalone using DataStore files. With it, the files are written by OpenClaw's Python brain.
-
-### 7.1 Bridge Protocol
-OpenClaw writes to `~/Documents/notchly/v2/` using the file contract above. Notchly reads. One-way data flow.
-
-For chat (S4 → OpenClaw):
-1. User sends message in Stage4ChatView
-2. Notchly writes request to `~/Documents/notchly/v2/chat_request.json`
-3. OpenClaw detects file change via FSEvents, processes, writes `openclaw_response.json`
-4. Notchly polls response file for 30s; if no response, falls back to Claude API
-
-### 7.2 chat_request.json Schema
-```json
-{
-  "id": "uuid",
-  "message": "Move the Curry & Beans task to tomorrow",
-  "context": {
-    "active_task": "ScheduleTask object",
-    "current_events": "[CalEvent array]",
-    "working_memory": "WorkingMemory object"
-  },
-  "timestamp": "2026-04-17T14:35:00Z"
-}
-```
-
-### 7.3 openclaw_response.json Schema
-```json
-{
-  "request_id": "uuid",
-  "message": "Done. Curry & Beans moved to tomorrow at 3 PM.",
-  "action": {
-    "type": "reschedule_task|add_task|dismiss_alert|set_goal|none",
-    "payload": {}
-  },
-  "timestamp": "2026-04-17T14:35:02Z"
-}
-```
-
-**TODO:**
-- [ ] **P0** Write `chat_request.json` in `Stage4ChatView.sendMessage()`
-- [ ] **P0** Poll `openclaw_response.json` — check `request_id` matches, check `timestamp` < 30s old
-- [ ] **P0** If no OpenClaw response in 5s, fall back to Claude API
-- [ ] **P1** `action` field — if type is `reschedule_task`, call `DataStore.shared.markTaskDone` / `addTask` to immediately update local state. Don't wait for next poll
-- [ ] **P2** Indicator in S4 header: "OpenClaw" vs "Claude" badge — shows which brain is responding
-
----
-
-## 8. SELF-LEARNING ALGORITHM
-
-### 8.1 W Score (Notification Weight)
-
-Each notification type+context gets a confidence score `W ∈ [0, 1]`.
-
-**Update rule (Exponential Moving Average):**
-```
-W_new = W_old × 0.85 + signal × 0.15
-```
-Where:
-- `signal = 1.0` for primary action tap (right button / swipe right)
-- `signal = 0.4` for secondary action (left button / swipe left)  
-- `signal = 0.0` for ignored (notification auto-collapsed with no interaction)
-- `signal = -0.2` for dismissed immediately (<2s after appearing)
-
-**Suppression threshold:** W < 0.2 → don't show this notification type in this context  
-**Recovery:** W recovers naturally as signal improves
-
-**Stored at:** `~/Documents/notchly/v2/memory/notification_weights.json`
-```json
-{
-  "breakfast_morning_weekday": 0.73,
-  "nudge_evening_freelance": 0.45,
-  "calendar_alert_anytime": 0.91
-}
-```
-
-**Context key format:** `{type}_{timeOfDay}_{dayType}`  
-Where `timeOfDay` = morning/afternoon/evening/night, `dayType` = weekday/weekend
-
-**TODO:**
-- [ ] **P1** Create `LearningEngine.swift` — single class that reads/writes weights and provides `shouldShow(type:context:) -> Bool`
-- [ ] **P1** Wire `perform(_ action:)` in `NotchState` to call `LearningEngine.shared.record(action:type:context:)`
-- [ ] **P1** Wire auto-collapse (30s timer fires with no interaction) → `LearningEngine.shared.record(.ignored, ...)`
-- [ ] **P1** Wire `DataStore.loadAlerts()` to filter through `LearningEngine.shouldShow()` before setting `pendingAlerts`
-- [ ] **P2** Weekly summary — compute per-type trend from raw log. Write to `memory/weekly_summary.json`. Show in S3 Dashboard as "Your week" card
-- [ ] **P3** Dynamic button placement — if right action has signal > 0.7, it stays right. If left action accumulates more taps than right, swap placement. Store per-type button assignment
-
-### 8.2 Rejection Count (Task Purgatory)
-If user taps "Skip" or "Later" on same task 3 times:
-- Flag task with `requires_diagnosis: true`
-- On next show: Stage 1 expands to Diagnosis Mode (taller, warm gray, three buttons stacked vertically: "Split it / Wrong time / Not needed")
-- Diagnosis buttons write back a `diagnosis_action` to DataStore
-
-**TODO:**
-- [ ] **P3** Implement `rejection_count` field in `ScheduleTask`
-- [ ] **P3** In `perform("take_break")` and `perform("later")`: increment `rejection_count`. If == 3: set `requires_diagnosis = true`, save
-- [ ] **P3** In `Stage1TimerView`: if `activeTask?.requires_diagnosis == true`, show Diagnosis Mode layout
-
----
-
-## 9. SYSTEM INTEGRATION
-
-### 9.1 Launch at Login (launchd)
-```xml
-<!-- ~/Library/LaunchAgents/com.notchly.app.plist -->
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.notchly.app</string>
-  <key>ProgramArguments</key>
-  <array><string>/Applications/NotchlyV2.app/Contents/MacOS/NotchlyV2</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict>
-</plist>
-```
-
-**TODO:**
-- [ ] **P2** Add "Launch at Login" toggle to Settings UI — writes/removes plist via `launchctl`
-- [ ] **P2** On first launch: prompt user to enable launch at login
-- [ ] **P2** Use `SMAppService.mainApp.register()` (macOS 13+ preferred) instead of manual plist
-
-### 9.2 Permissions Required
-| Permission | API | Purpose | When Asked |
-|------------|-----|---------|------------|
-| Calendar | `EKEventStore.requestFullAccessToEvents` | Show today's events | First launch |
-| Accessibility | `AXIsProcessTrusted()` | Global hotkey via CGEventTap | First launch |
-| (none) | NSTrackingArea | Hover detection | No permission needed |
-| (none) | CoreAudio | Volume | No permission needed |
-| (none) | IOBluetooth | BT device list | No permission needed |
-
-**TODO:**
-- [ ] **P1** First-launch permission flow — show an onboarding card in S2 asking for Calendar, then Accessibility. Currently permissions are silently skipped if denied
-- [ ] **P2** `AXIsProcessTrusted()` check on launch — if not trusted, show amber dot in S0 indicating "limited mode" (no global hotkey)
-- [ ] **P2** `AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt: true])` — trigger system prompt for Accessibility
-
-### 9.3 App Sandbox
-**Must remain disabled.** Sandbox would block:
-- FSEvents on `~/Documents/notchly/v2/`
-- `IOBluetoothDevice.pairedDevices()`
-- `CGEventTap` for global hotkey
-
-### 9.4 No Dock Icon, No Menu Bar
-- `LSUIElement = true` in Info.plist → no Dock icon ✅
-- No `NSStatusItem` created → no menu bar icon ✅
-- The only way to quit: context menu "Quit" (to be added) or Activity Monitor
-
----
-
-## 10. DESIGN TOKENS
-
-All UI values are defined in `NotchlyDesign.swift` as `ND.*`. Do not hardcode any visual values outside this file.
-
-### 10.1 Colors (all `.dark` colorScheme)
-| Token | Value | Usage |
-|-------|-------|-------|
-| `ND.Color.primary` | white | Titles, primary text |
-| `ND.Color.secondary` | white 0.6 | Subtitles, labels |
-| `ND.Color.tertiary` | white 0.35 | Hints, timestamps |
-| `ND.Color.muted` | white 0.15 | Disabled, placeholders |
-| `ND.Color.surface` | white 0.06 | Card backgrounds |
-| `ND.Color.stroke` | white 0.08 | Borders, dividers |
-| `ND.Color.green` | `#34C759` | Done, active, success |
-| `ND.Color.orange` | `#FF9500` | Warnings, alerts, loud volume |
-| `ND.Color.red` | `#FF3B30` | Error, muted, urgent |
-| `ND.Color.blue` | `#007AFF` | Calendar, music |
-| `ND.Color.purple` | `#AF52DE` | AI, Notchly brand |
-
-### 10.2 Typography
-| Token | Size | Weight | Usage |
-|-------|------|--------|-------|
-| `ND.Font.heading()` | 13pt | semibold | Stage headers |
-| `ND.Font.body()` | 12pt | regular | Main content |
-| `ND.Font.caption()` | 11pt | regular | Subtitles, hints |
-| `ND.Font.micro()` | 10pt | regular | Timestamps, labels |
-| `ND.Font.mono(11)` | 11pt | monospaced | Timer labels, percentages |
-
-### 10.3 Spacing
-| Token | Value |
-|-------|-------|
-| `ND.Space.sm` | 6pt |
-| `ND.Space.md` | 10pt |
-| `ND.Space.lg` | 16pt |
-
-### 10.4 Motion
-| Token | Animation |
-|-------|-----------|
-| `ND.Motion.micro` | spring(response:0.2, dampingFraction:0.8) |
-| `ND.Motion.fast` | spring(response:0.28, dampingFraction:0.82) |
-| `ND.Motion.expand` | spring(response:0.38, dampingFraction:0.78) |
-| `ND.Motion.spring` | spring(response:0.45, dampingFraction:0.72) |
-
-**TODO:**
-- [ ] **P2** Swipe commit animation needs a new token: `ND.Motion.suckBack` — `.easeIn(duration: 0.22)` for the collapse-into-notch on swipe confirm
-
----
-
-## 11. TESTING CHECKLIST
-
-This is the Definition of Done. All items must pass before shipping.
-
-### 11.1 Window & Positioning
-- [ ] S0 appears centered on physical notch camera cutout (not menu bar center) on 14" MacBook Pro M3
-- [ ] S0 appears centered on physical notch on 16" MacBook Pro M3 Max
-- [ ] On non-notch Mac (Air M2), window appears at top-center of screen without crashing
-- [ ] External monitor connected: window appears on built-in screen notch, NOT on external
-- [ ] Screen arrangement changed while app running: window re-positions within 0.5s
-- [ ] Display goes to sleep and wakes: window re-positions correctly
-- [ ] Mission Control / Exposé: window stays on top (collectionBehavior correctly set)
-- [ ] Full-screen app on built-in screen: window still visible above it
-- [ ] App installed at `/Applications/NotchlyV2.app`, codesigned, launches via launchd
-
-### 11.2 Stage Transitions
-- [ ] S0 → S15: single tap, immediate (< 50ms)
-- [ ] S15 → S2: single tap on hover card
-- [ ] S2 → S3: single tap on card
-- [ ] S3 → S0: single tap on dashboard
-- [ ] Any → S4: double-tap from S0 or ⌘⇧Space from any app
-- [ ] S1 auto-collapse: notification appears, 30s later collapses without interaction
-- [ ] S1 hover pause: cursor enters, auto-collapse pauses; cursor exits, 30s restarts
-- [ ] Scroll up from S0 (12pt): snaps to S15
-- [ ] Scroll up from S0 (50pt): snaps to S2 (skips S15)
-- [ ] Scroll up from S0 (100pt): snaps to S3
-- [ ] Scroll down from S3: collapses to S0
-- [ ] Scroll mid-gesture does NOT drop (phase-aware test): start trackpad scroll, hold fingers mid-gesture for 1s, continue — should not reset accumulator
-
-### 11.3 Notifications (S1)
-- [ ] Alert appears when `pending_alerts.json` is written with a valid PendingAlert
-- [ ] Alert appears within 15s of file write (poll cycle)
-- [ ] Alert shows correct icon for each type (nudge/calendar/reminder/notion/ai)
-- [ ] Alert auto-collapses at 30s
-- [ ] Hover reveals buttons below (slide animation, full width)
-- [ ] Right button tap → action fires → continuity banner shows → S0
-- [ ] Left button tap → action fires → S0
-- [ ] Swipe right past 30pt → commits right action
-- [ ] Swipe left past 30pt → commits left action
-- [ ] Swipe < 30pt → springs back
-- [ ] Green wash visible during right swipe
-- [ ] Gray wash visible during left swipe
-- [ ] Suck-back animation on commit
-
-### 11.4 Timer (S1)
-- [ ] Active task shows when `schedule.json` has a task with `status: "active"`
-- [ ] Timer label cycles: countdown → elapsed → percent (every 4s)
-- [ ] Tap timer number → pauses (label shows "Paused ⏸")
-- [ ] Tap again → resumes
-- [ ] Progress arc fills proportionally to task elapsed time
-- [ ] "Done" button marks task in DataStore and loads next pending task
-- [ ] "Break" button creates break task
-- [ ] Hover shows Done/Break buttons below timer
-
-### 11.5 Volume HUD (S1)
-- [ ] Volume HUD appears within 0.5s of system volume change
-- [ ] Gradient: normal=green, loud(>80%)=green→orange, muted=red
-- [ ] Mute toggle shows "Muted" label and red bar
-- [ ] HUD auto-collapses 2.5s after last change
-- [ ] Volume HUD does NOT appear if S1 Notification is active
-
-### 11.6 Chat (S4)
-- [ ] ⌘⇧Space opens S4 from any app
-- [ ] Double-tap on S0 opens S4
-- [ ] Message sends on Return key
-- [ ] AI responds (Claude API or OpenClaw)
-- [ ] Idle 60s with no input → S4 closes
-- [ ] Cursor leaves notch for 60s → S4 closes
-- [ ] Active session (AI generating) → cursor leave does NOT close S4
-- [ ] Schedule keyword ("tomorrow") → context strip appears above input
-
-### 11.7 Dashboard (S3)
-- [ ] All calendar events show for today
-- [ ] Current event highlighted (title + time left)
-- [ ] Active task shows with timer
-- [ ] Pending tasks show (up to 3) with circle tap buttons
-- [ ] Circle button tap → marks task done → row animates out
-- [ ] Now playing shows current song
-- [ ] BT battery shows colored bar (red if < 20%)
-- [ ] `todays_goal` from working_memory.json appears in AI goal card
-
-### 11.8 Learning Algorithm
-- [ ] After 3 ignores of same alert type, alert stops showing in that context
-- [ ] After 5 primary-action taps, W > 0.7
-- [ ] After 5 ignores, W < 0.2
-- [ ] W scores survive app restart (persisted to file)
-- [ ] Weekly summary shows trend for each notification type
-
-### 11.9 OpenClaw Integration
-- [ ] Message in S4 writes `chat_request.json`
-- [ ] OpenClaw response appears in S4 within 5s
-- [ ] If no OpenClaw: Claude API responds within 3s
-- [ ] Reschedule action in response updates DataStore immediately
-
----
-
-## 12. KNOWN BUGS (Current Build)
-
-| # | Severity | Description | File | Fix |
-|---|----------|-------------|------|-----|
-| 1 | HIGH | Window appears on external monitor instead of built-in notch | NotchWindowController.swift | Verify `builtinScreen()` returns correct device |
-| 2 | HIGH | `minutesLeft` returns `duration_minutes` instead of actual remaining | DataStore.swift | Need `start_time` field in ScheduleTask |
-| 3 | HIGH | No swipe left/right gesture for notifications | NotchRootView.swift | Implement `scrollingDeltaX` routing |
-| 4 | HIGH | ⌘⇧Space global hotkey not implemented | NotchWindowController.swift | Add `CGEventTap` or `Carbon.RegisterEventHotKey` |
-| 5 | HIGH | Stage 4 chat has no real AI — hardcoded stub | Stage4ChatView.swift | Wire Claude API |
-| 6 | MED | `action_left`/`action_right` fields ignored | NotchState.swift | Use from `pendingAlerts.first` if set |
-| 7 | MED | Task "Done" doesn't automatically load next task | NotchState.swift | After `markTaskDone`, call `applySchedule` with remaining |
-| 8 | MED | Hover exit fires immediately (flicker on edge) | NotchWindowController.swift | Add 200ms debounce to `setHover(false)` |
-| 9 | MED | Timer label is static (not cycling countdown→elapsed→%) | Stage1TimerView.swift | Add cycle state machine |
-| 10 | LOW | No progress arc in timer view | Stage1TimerView.swift | Add arc overlay using `timerProgress` |
-| 11 | LOW | `PendingAlert.priority` not used for sort order in DataStore | DataStore.swift | Already sorted in `loadAlerts()` — verify it works |
-| 12 | LOW | No "Quit" in context menu | NotchRootView.swift | Add `Button("Quit Notchly") { NSApp.terminate(nil) }` |
-
----
-
-## 13. BUILD & DEPLOY
-
-### 13.1 Build Commands
-```bash
-# Development build
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  NOTCHLY — COMPLETE ENGINEERING MASTER TODO                                ║
+║  Micro to Macro · Every feature · Every fix · Every test                   ║
+║  Audience: Senior macOS Engineer · Product Lead · QA                       ║
+║  Updated: 2026-04-17                                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STAGE MAP (7 stages, continuous progress model)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Stage  │ Name              │ Progress / Trigger      │ Visual Function
+  ───────┼───────────────────┼─────────────────────────┼─────────────────────────────────
+  S0     │ Idle Pill         │ 0.0                     │ Stealth. Blends with hardware notch
+  S1A    │ Notification      │ 0.15 (proactive)        │ Alert: title + dot + hover buttons
+  S1B    │ Timer             │ 0.15 (active task)      │ Live countdown + pause + hover buttons
+  S1.5   │ Hover / Diagnosis │ 0.12–0.39 (cursor)      │ Read-only peek OR 3-option diagnosis
+  S2A    │ NowCard           │ 0.40–0.69 (scroll/tap)  │ Full task card + action buttons
+  S2B    │ Missed Panel      │ 0.40 dynamic            │ Scrollable missed alerts + inline reply
+  S3     │ Dashboard         │ 0.70–0.99 (long scroll) │ Full day: timeline + tasks + score
+  S4     │ Chat / System     │ 1.0 (hotkey only)       │ AI chat, context peek, action cards
+
+  Navigation:
+  • Gestural: S0 ↔ S1.5 ↔ S2 ↔ S3  (two-finger scroll depth)
+  • Direct:   ⌘⇧Space → S4 always   │  ⌘Space toggles S0 ↔ S3
+  • Proactive: Brain fires S1A automatically on important events
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CURRENT BUILD STATE (v3 codex, 2026-04-17)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Component                                    │ File                        │ Status
+  ─────────────────────────────────────────────┼─────────────────────────────┼────────
+  NSPanel layer 25, collectionBehavior correct │ NotchWindowController.swift │ ✅
+  Notch geometry via auxiliaryTopLeftArea      │ NotchState.swift            │ ✅
+  Stage system S0→S4 with transitions          │ NotchRootView.swift         │ ✅
+  Phase-aware scroll accumulator               │ NotchState.swift            │ ✅
+  Volume monitor (CoreAudio 0.25s poll)        │ VolumeMonitor.swift         │ ✅
+  NowPlaying (Music + Spotify)                 │ NowPlayingMonitor.swift     │ ✅
+  Bluetooth audio + battery (ioreg)            │ BatteryMonitor.swift        │ ✅
+  Calendar events via EventKit                 │ CalendarManager.swift       │ ✅
+  DataStore polling ~/notchly/v2/ at 15s       │ DataStore.swift             │ ✅
+  S0 idle dot with pulse                       │ Stage0View.swift            │ ✅
+  S1 notification + swipe offset               │ Stage1NotificationView      │ ✅
+  S1 timer + progress                          │ Stage1TimerView             │ ✅
+  S1 volume HUD                                │ Stage1VolumeView            │ ✅
+  S1.5 hover card                              │ Stage15HoverView            │ ✅
+  S2 card with left/center/right actions       │ Stage2CardView              │ ✅
+  S3 dashboard (cal, music, BT, tasks)         │ Stage3DashboardView         │ ✅
+  S4 chat UI                                   │ Stage4ChatView              │ ⚠️ stub
+  Settings window                              │ SettingsView                │ ✅
+  NSTrackingArea hover (no Accessibility)      │ NotchWindowController       │ ✅
+  Continuity banner                            │ ContinuityBanner            │ ✅
+  ND design token system                       │ NotchlyDesign.swift         │ ✅
+  Swipe left/right gesture                     │ —                           │ ❌ missing
+  ⌘⇧Space global hotkey                        │ —                           │ ❌ missing
+  Real AI in S4                                │ —                           │ ❌ stub
+  Timer label cycling (countdown→elapsed→%)    │ Stage1TimerView             │ ❌ static
+  Self-learning W score algorithm              │ —                           │ ❌ missing
+  EVR interruption guard                       │ —                           │ ❌ missing
+  OpenClaw chat bridge                         │ —                           │ ❌ missing
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 1 — WINDOW & NOTCH  (do first — everything depends on it)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Window sits exactly on notch — no gap, no overlap
+[ ] notchH reads from screen.safeAreaInsets.top (not hardcoded 38)
+[ ] notchW reads from auxiliaryTopLeftArea/TopRightArea (not hardcoded 162)
+[ ] Window level = .statusBar (CGWindowLevel 25)
+[ ] collectionBehavior: [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+[ ] No shadow, no border, transparent background, isOpaque=false
+[ ] LSUIElement = true in Info.plist — no Dock icon
+[ ] No NSStatusItem — no menu bar icon
+[ ] acceptsFirstMouse = true on contentView so clicks don't activate app
+[ ] canBecomeKey = false, canBecomeMain = false
+[ ] Seam masker: 2pt black Rectangle above pill, width = pillW - topRadius×2, y = -1pt
+[ ] Window repositions on NSApplication.didChangeScreenParametersNotification
+[ ] recalculate(using:) called on every screen change
+[ ] App does not appear in Cmd+Tab switcher
+[ ] Entry animation: pill drops from y:-10 opacity:0 → y:0 opacity:1, spring(0.42,0.72)
+[ ] BUILT-IN SCREEN PRIORITY: builtinScreen() must always win over external monitor
+[ ] If external is primary (user's current X=3227 bug): force built-in for notch window
+[ ] Test: CGDisplayIsBuiltin() returns correct value for M-series built-in
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 2 — STAGE 0 (idle — truly invisible)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Width = exact notchW from hardware measurement
+[ ] Height = exact notchH from safeAreaInsets.top
+[ ] Fill = #000000 pure black (blends with physical hardware notch)
+[ ] topRadius = 6pt, bottomRadius = 10pt
+[ ] Content: single 3×3pt dot centered horizontally, vertically centered
+[ ] Dot color — no missed alerts: rgba(255,255,255, 0.06) — barely visible
+[ ] Dot color — has pending alerts: rgba(228,75,74, 0.20) — dim red
+[ ] Dot color — has active task: rgba(29,158,117, 0.20) — dim green
+[ ] Dot color — music playing: rgba(74,144,226, 0.20) — dim blue
+[ ] Dot = INVISIBLE (no dot at all) during deep focus mode (same app >20min)
+[ ] Dot fades in over 0.4s when transitioning into S0
+[ ] S0 is truly stealth — blends with hardware notch, no visible pill border
+[ ] Single tap → S15 Hover
+[ ] Double-tap → S4 Chat (skip S1/S2/S3)
+[ ] Two-finger scroll down (>12pt delta) → S15 Hover
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 3 — STAGE 1A (notification bar)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DIMENSIONS:
+[ ] Width: content-fit, MIN 240pt MAX 400pt
+[ ] Height default (no hover): notchH + 20pt
+[ ] Height on hover (buttons visible): notchH + 44pt
+[ ] topRadius = 8pt, bottomRadius = 14pt
+[ ] Fill = #111111, border = rgba(255,255,255,0.06) 0.5pt, top edge = none
+
+CONTENT ROW:
+[ ] 5pt type dot · title 12pt medium · separator 1×10pt · sub 10.5pt
+[ ] Dot color by type: green=task, amber=meal, blue=class, red=deadline, purple=ai
+[ ] Title truncates lineLimit=1
+[ ] Sub shows time remaining or context (e.g. "in 7m")
+[ ] Wire alertType from PendingAlert.type to dot color map
+
+AUTO-DISMISS:
+[ ] Auto-collapses to S0 after 30 seconds if no interaction
+[ ] 30s timer pauses when cursor enters hover zone
+[ ] 30s timer resumes when cursor leaves hover zone
+[ ] On dismiss by timeout: add to missedAlerts THEN collapse to S0
+[ ] Collapse animation: spring(response:0.35, dampingFraction:0.82)
+[ ] S1A NEVER persists forever — 30s is a hard limit
+
+HOVER SEQUENCE (critical — must be exact):
+[ ] Step 1: cursor enters → hint text appears FIRST (before bar grows)
+[ ] Hint text: "← [leftActionLabel]  ·  [rightActionLabel] →"
+[ ] Hint text color: left = rgba(255,255,255,0.18), right = rgba(29,158,117,0.45)
+[ ] Hint text font: SF Pro 9.5pt regular
+[ ] Step 2: bar grows taller, spring(response:0.35, dampingFraction:0.75)
+[ ] Step 3: buttons SLIDE DOWN from inside bar (bar grows, buttons don't float)
+[ ] Buttons fill full width minus 14pt padding each side
+[ ] Button gap = 5pt between buttons
+[ ] Button height = 25pt, cornerRadius = 7pt
+[ ] Right button (primary): bg #4A90E2, text white, 10.5pt medium
+[ ] Left button (secondary): bg rgba(255,255,255,0.07), border 0.5pt, 10.5pt medium
+[ ] 3-button layout (meal/task with Later): full width, 5pt gaps, middle bg more faded
+[ ] Cursor leaves hover zone: bar shrinks, buttons slide back in, hint fades
+
+ACTIONS:
+[ ] action_left / action_right from PendingAlert override defaults
+[ ] If PendingAlert has no action fields, use category defaults (see Block 13)
+[ ] Continuity banner appears below for 4s when any button tapped
+[ ] Right button tap → perform rightAction → collapse to S0
+[ ] Left button tap → perform leftAction → collapse to S0
+[ ] Middle button (when present): click only, NOT swipeable, never swipe-triggered
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 4 — STAGE 1B (active task timer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DIMENSIONS:
+[ ] Width: content-fit MIN 280pt MAX 360pt
+[ ] Height: notchH + 22pt (slightly taller than 1A)
+[ ] Same radius and border as S1A
+
+TIMER:
+[ ] Color: SF Mono, #1D9E75 green
+[ ] Format: >60min → "1h 18m" | ≤60min → "18:42" live MM:SS
+[ ] Live countdown: updates every 1 second via Timer
+[ ] Timer stored: private var countdownTimer: Timer?
+[ ] Timer invalidated in deinit { countdownTimer?.invalidate() }
+[ ] RunLoop.main.add(timer, forMode: .common) — smooth during scroll
+[ ] LABEL CYCLES every 4s (auto, pauses on hover):
+    1. Countdown: "24m left"
+    2. Elapsed: "36m in"
+    3. Percentage: "60% done"
+[ ] Cycle requires: @State var cycleIndex = 0 + 4s Timer
+
+PAUSE/RESUME:
+[ ] TAP the timer label to pause/resume (not a button — the label itself)
+[ ] NSClickGestureRecognizer with 8pt expanded hit area
+[ ] Paused: timer color → gray, "⏸" shown inline after label
+[ ] Resumed: color back to green, "⏸" disappears
+[ ] Haptic on toggle: NSHapticFeedbackManager.defaultPerformer .generic
+
+HOVER:
+[ ] Hover: bar grows, "Done ✓" (right, green) and "Take break" (left) slide down
+[ ] Cycle pauses when hover buttons visible
+[ ] Timer tap still works while hover visible
+
+TIME'S UP:
+[ ] At 0:00: color → amber, shows "0:00", 30s timer stops
+[ ] Auto-shows buttons for 10s: [+15 min] (left) · [Done ✓] (right)
+[ ] S1B NEVER auto-dismisses — persists until user acts
+
+PROGRESS ARC:
+[ ] Arc overlaid on timer label, 3pt stroke
+[ ] Arc fills clockwise proportional to timerProgress
+[ ] Color: green (< 80%) → amber (80–95%) → red (>95%)
+[ ] Need start_time in ScheduleTask to compute timerProgress correctly
+[ ] timerProgress = elapsed / duration (NOT 1 - remaining/duration)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 5 — STAGE 1.5 (hover peek — read only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Trigger: cursor enters 400×75pt hover zone centered on notch
+[ ] Width: ~340pt max 360pt
+[ ] Height: notchH + 32pt
+[ ] topRadius = 10pt, bottomRadius = 16pt
+[ ] Row 1: 7pt dot · "[task] · [timeLeft] · [pct]% done" 12pt medium
+[ ] Row 2: "next: [task] · [time]" 10pt + "MISSED·N" in red if missed > 0
+[ ] Row 3: "scroll ↓ to act" 9.5pt textTertiary 0.6 opacity
+[ ] Scroll hint chevron (chevron.down) animates with subtle bob, 2s repeat
+[ ] NO buttons — completely read only, no interaction except mouse and scroll
+[ ] Hover exit: immediate collapse, easeOut(0.2s) — no delay, no grace
+[ ] Exit debounce: 200ms before firing setHover(false) — prevents flicker
+[ ] Missed count: if pendingAlerts.count > 0, show orange badge "● N missed"
+[ ] Tapping missed badge → goes to S2B (missed list), not S2A
+[ ] Scroll ≥ 50pt from here → S2A NowCard
+[ ] Scroll ≥ 120pt → S3 Dashboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 6 — STAGE 2A (NowCard — action stage)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Trigger: click S15 OR scroll δy 50–120pt
+[ ] Width: 380pt fixed
+[ ] Height: notchH + 88pt
+[ ] topRadius = 12pt, bottomRadius = 20pt
+[ ] Header: type icon · task title 12.5pt medium · time remaining · app launch button
+[ ] Subtitle: 10pt regular, project name or context
+[ ] Progress bar: 2pt height, green/amber/red, full width of card
+[ ] "next: [task] · [time] · P=[score]" below bar, 10pt textTertiary
+[ ] 3 action buttons, full width, HStack spacing 5pt
+[ ] Button heights 28pt, cornerRadius 7pt
+[ ] Left = secondary style (gray bg, border)
+[ ] Center = muted style (more faded bg) — click ONLY, never swipe
+[ ] Right = primary style (#4A90E2 blue)
+[ ] EXCEPTION: deadline escalated → right button bg = #E24B4A red
+[ ] Mouse away: IMMEDIATE collapse to S0 — no delay, no grace period
+[ ] Action taken → continuity banner → collapse to S0
+[ ] App launch button: "Open [App]" if not running, "Switch to [App]" if running not front
+[ ] App launch button hidden if app is already frontmost
+[ ] App button position: top-right corner of card, 8pt from edges
+
+BUTTON SETS (implement ALL — AI selects per notification type):
+[ ] task:     [Not yet] · [Later] · [Done ✓]          — 3 buttons, Later=middle click only
+[ ] meal:     [Skip] · [Done] · [Going now]             — 3 buttons, Done=middle click only
+[ ] class:    [Skip] · [Later] · [On my way]            — 3 buttons, Later=middle click only
+[ ] exercise: [Skip today] · [Later] · [Starting now]   — 3 buttons
+[ ] deadline: [Move to 8pm] · [+30m] · [Start now]     — right=red
+[ ] timer-up: [Not yet] · [Take break] · [Done ✓]      — 3 buttons
+[ ] lazy:     [10 more min] · [Dismiss] · [Get back to it]
+[ ] break-end:[5 more min] · [Tomorrow] · [Back now]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 7 — STAGE 2B (missed notifications panel)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Trigger: cursor in hover zone AND missedAlerts.count > 0
+[ ] 2A and 2B mutually exclusive — never both visible
+[ ] 2B takes priority over 2A when missed alerts exist
+[ ] Width: 360pt fixed
+[ ] Height: notchH + 20pt header + (28pt × min(2,count)) + 8pt
+[ ] Header: red dot · "MISSED·N" 10pt bold red uppercase · "see all ↓" · "✕ clear all"
+[ ] Shows most recent 2 missed items (suffix 2, reversed chronological)
+[ ] Each item row: 2.5pt accent bar · title 11pt · time-ago 10pt textTertiary
+[ ] Accent bar colors: class=blue, task=green, break=purple, deadline=red, meal=amber
+[ ] Tap item → that item expands inline, shows 3 quick-reply buttons
+[ ] Only ONE item expanded at a time (others collapse)
+[ ] Expanded height: 28pt → 58pt, spring(0.35, 0.75)
+[ ] Quick-reply buttons per item: [Done ✓] [Still needed] [Skip]
+[ ] "see all ↓" → opens S3 Dashboard
+[ ] "✕" clear all → dismisses all missed, collapses to S0
+[ ] Mouse away: IMMEDIATE collapse
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 8 — STAGE 3 (full dashboard)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Trigger: scroll δy > 120pt OR ⌘Space OR "see all" tap from S2B
+[ ] Width: 520pt fixed
+[ ] Height: dynamic MIN 280pt MAX 400pt
+[ ] topRadius = 16pt, bottomRadius = 24pt
+[ ] Fill = #0c0c0c, border rgba(255,255,255,0.06) 0.5pt
+[ ] Section cards: bg rgba(255,255,255,0.025), border rgba(255,255,255,0.04), radius 9pt
+
+ROW 1 — Two columns:
+[ ] LEFT: Today Timeline — max 6 events
+[ ] Done events: muted/strikethrough. Current: highlighted + pulsing dot + " ▶" suffix
+[ ] RIGHT: Tasks Left — max 5 tasks
+[ ] Each task: circle tick button (14×14pt) · name · "P=8.4" SF Mono · mini progress bar
+[ ] Circle tick: tap → checkmark + strikethrough animation → row fades out
+[ ] Circle tick hover: border color → green
+[ ] Mini progress bar: 48×3pt, green/amber/red
+
+ROW 2 — Two columns:
+[ ] LEFT: Now + Prep — current task + live timer + next task + upcoming class
+[ ] RIGHT: Day Score — done count, left count, energy label, missed count (red if > 0)
+
+FULL WIDTH:
+[ ] Calendar section: current event (title + time left) OR next 2 upcoming events
+[ ] Now Playing: song + artist + 48pt mini progress bar
+[ ] Bluetooth: device name + battery bar (red if < 20%, amber if < 40%)
+[ ] AI goal: purple card with workingMemory.todays_goal text
+[ ] Footer: purple dot · "double-tap to chat" 9.5pt textTertiary
+
+[ ] Double-tap anywhere in S3 → opens S4 chat (content swaps in same panel)
+[ ] Mouse away: IMMEDIATE collapse to S0 (no grace)
+[ ] Exception: if S4 open via S3 double-tap, follow S4 close rules
+[ ] S3 does NOT auto-collapse on timer — only scroll-up or Esc collapses
+
+TASK TICK IMPLEMENTATION:
+[ ] Each task row: HStack with circle button + content
+[ ] Circle button: .onTapGesture → DataStore.shared.markTaskDone(task.id)
+[ ] After tap: @State var completedIDs: Set<String> — add id
+[ ] Row: if completedIDs.contains(task.id) → strikethrough + fadeout animation
+[ ] Animation: strikethrough draws across 0.3s, then opacity → 0, height → 0, 0.4s
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 9 — STAGE 4 (chat — intentional path)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Trigger: ⌘⇧Space global hotkey OR double-click S0 notch
+[ ] Width: 520pt fixed
+[ ] Height: 80pt (empty) → grows with content → MAX 360pt
+[ ] Scrolls internally when content > 360pt
+[ ] topRadius = 16pt, bottomRadius = 24pt
+[ ] Fill = #0d0d0d, border rgba(255,255,255,0.07)
+[ ] Purple accent (#7F77DD) throughout — visually distinct from S1–S3
+
+HEADER:
+[ ] Purple 5pt dot · "Ask Notchly" 10.5pt textSecondary
+[ ] Pin badge (visible only when pinned): purple bg + "pinned · action pending"
+[ ] ⌘⇧Space hint: SF Mono purple, right side
+[ ] ✕ button far right → close and clear chat
+
+CONTEXT PEEK (zero API calls, client-side only):
+[ ] Keywords that trigger: move, tomorrow, reschedule, when, free, deadline,
+    today, later, morning, evening, after, before, time, schedule
+[ ] Detection: string match on draft onChange — every keystroke
+[ ] On keyword match: schedule strip slides in above input, height 0→60pt spring(0.35,0.80)
+[ ] Strip content: 3 upcoming events in compact format
+[ ] Strip fades when non-schedule content typed
+[ ] Strip never triggers an API or file read — data already in memory
+
+CONVERSATION:
+[ ] User bubbles: right-aligned, rgba(74,144,226,0.15) tint bg, max-width 85%
+[ ] AI bubbles: left-aligned, surface bg, max-width 90%
+[ ] AI action cards embedded in AI bubble:
+    - updated_queue_card: new task queue with P scores
+    - timeline_card: updated schedule for today
+    - single_task_card: confirms one task added or moved
+    - question_card: follow-up with 2 inline reply buttons
+
+INPUT BAR:
+[ ] Purple dot · TextField "ask anything · add task · reschedule…" · return key hint
+[ ] Send fires on Return key
+[ ] Draft clears after send
+[ ] Loading spinner next to header while AI responds
+
+SESSION LOCK RULES:
+[ ] PINNED when: action card unacknowledged OR AI is responding
+[ ] Pinned: mouse away does NOT close — only Esc or ✕
+[ ] Pin badge shows in header when pinned
+[ ] IDLE (nothing sent, conversation complete): mouse away → 60s → clears → S0
+[ ] Re-enter within 60s: chat text preserved
+[ ] S3→S4 via double-tap: mouse away = IMMEDIATE close (no 60s grace)
+[ ] Only hotkey/double-click S4 gets the 60s grace
+
+AI BACKEND:
+[ ] Primary: OpenClaw bridge (check openclaw_response.json, if < 5s old, use it)
+[ ] Fallback: Claude API claude-sonnet-4-6
+[ ] System prompt includes: active_task, pending_alerts[:3], calEvents[:4], workingMemory
+[ ] Response max tokens: 300 (keep it concise for the small UI)
+[ ] On response: parse for action card JSON, render if present
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 10 — SWIPE GESTURE PHYSICS (the most important interaction)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ACTIVE STAGES: S1A, S1B, S2A, S2B (where buttons exist)
+Outside these stages: horizontal scroll = default macOS (do not capture)
+
+DETECTION:
+[ ] abs(scrollingDeltaX) > abs(scrollingDeltaY) = horizontal gesture
+[ ] Accumulate xDelta across .began → .changed phases
+[ ] Commit threshold: abs(xDelta) ≥ 40pt AND velocity > 200pt/s
+[ ] Add deltaX parameter to registerScroll() alongside deltaY
+[ ] Route horizontally when |deltaX| > |deltaY| && |deltaX| > 4pt
+
+BUTTON DIRECTION RULE (from screenshot — ALWAYS):
+  Swipe right = rightmost button
+  Swipe left  = leftmost button
+  Middle button = click only — never swipe-triggered
+  AI decides which action is on which side (see Block 13)
+
+── STATE 0: ENTRANCE (card drops in) ─────────────────────────────────────────
+[ ] Drop from y:-notchH opacity:0 → spring(0.42, 0.72) — feels physical
+[ ] Affordance nudge fires ONCE PER INSTALL (UserDefaults "swipeNudgeSeen" flag)
+[ ] Nudge: +10pt right → -10pt left → center, spring(0.28, 0.65)
+[ ] Hint text visible: "← [leftLabel]  ·  [rightLabel] →" rgba(255,255,255,0.22)
+[ ] Hint updates to match current AI-determined button placement
+
+── STATE 1: PULL (|δx| 1–39pt) ───────────────────────────────────────────────
+[ ] Card tracks finger at 90% friction (not 1:1)
+[ ] RIGHT pull:
+    · green wash rgba(29,158,117) builds 0→55% opacity proportional to ratio
+    · right button scales 1.0→1.08×
+    · left button fades to 20% opacity
+[ ] LEFT pull:
+    · warm gray wash rgba(80,80,80) builds 0→40% — NEVER red, never green
+    · left button scales 1.0→1.08×
+    · right button fades to 20% opacity
+[ ] ratio = abs(xDelta) / 40.0 (0.0 → 1.0)
+[ ] All lerps driven by ratio
+
+── STATE 2: THRESHOLD (|δx| ≥ 40pt) ─────────────────────────────────────────
+[ ] Color snaps to full opacity: easeInOut(0.12s)
+[ ] Right: rgba(29,158,117, 0.55) full
+[ ] Left:  rgba(80,80,80, 0.40) full — ALWAYS warm gray, NEVER red
+[ ] Button text morphs: right → "✓ confirmed" | left → "→ skip"
+[ ] Haptic: NSHapticFeedbackManager.defaultPerformer .levelChange
+
+── STATE 3A: SNAP BACK (released before threshold) ───────────────────────────
+[ ] Card → center, spring(0.32, 0.68)
+[ ] Color opacity → 0, easeOut(0.20s)
+[ ] Buttons scale → 1.0
+[ ] 30s dismiss timer resets to full 30s
+
+── STATE 3B: SUCK INTO NOTCH (released at/past threshold) ────────────────────
+[ ] Action FIRES IMMEDIATELY (before animation completes)
+[ ] Write to episodic log immediately
+[ ] Card: translateY → -notchH + scaleX → 0.1 + opacity → 0, easeIn(0.22s)
+[ ] Edge pulse: right=green rgba(29,158,117,0.60)→0 | left=gray rgba(80,80,80,0.40)→0
+[ ] Edge pulse: easeOut(0.30s) — physical "absorbed by hardware" feel
+[ ] Continuity banner appears below: spring(0.45, 0.72)
+[ ] Left suck = warm gray pulse. Right suck = green pulse. NEVER red pulse.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 11 — SCROLL DEPTH GESTURE (vertical, stage progression)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Capture global NSEvent monitor for .scrollWheel
+[ ] ONLY process when cursor in hover zone (400×75pt centered on notch)
+[ ] Reset accumulator on phase .began
+[ ] Accumulate scrollingDeltaY on phase .changed
+[ ] Ignore phase .ended, .cancelled → schedule 0.45s reset, do not process delta
+[ ] Ignore momentumPhase != .none || .stationary (inertial scroll)
+[ ] Trackpad (hasPreciseScrollingDeltas=true): delta as-is
+[ ] Magic Mouse (false): delta × 8.0
+[ ] Non-precise, no phase: 0.35s idle reset timer
+
+THRESHOLDS (current, may tune):
+[ ] δy 0–11pt:   dead zone — no change
+[ ] δy 12–35pt:  → S15 Hover
+[ ] δy 36–79pt:  → S2A NowCard
+[ ] δy 80pt+:    → S3 Dashboard
+[ ] δy ≤ -16pt:  → S0 Idle (collapse)
+
+[ ] All snaps: spring(0.42, 0.68)
+[ ] Collapse: spring(0.35, 0.80)
+[ ] Release mid-scroll: snap to nearest stage threshold
+[ ] Scroll up from any stage → collapse to S0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 12 — HOTKEYS & DOUBLE-CLICK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] ⌘⇧Space → openStage4() — works from ANY app, ALWAYS (highest priority)
+[ ] ⌘Space   → toggle S3 Dashboard (open if any stage, close if S3)
+[ ] ⌘D       → mark current task done (when S1B or S2A active)
+[ ] ⌘S       → skip current task
+[ ] ⌘L       → postpone task
+[ ] ⌘E       → extend timer +15min (when S1B active)
+[ ] Y key    → primary/right action (when S1A visible and cursor in zone)
+[ ] Esc      → collapse any stage to S0
+
+IMPLEMENTATION:
+[ ] Use Carbon RegisterEventHotKey (NOT NSEvent — more reliable, no focus needed)
+[ ] Request Accessibility: AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt:true])
+[ ] If Accessibility denied: hotkeys silently fail, amber dot in S0 indicates "limited mode"
+[ ] AXIsProcessTrusted() check on every launch — re-show prompt if denied
+
+DOUBLE-CLICK:
+[ ] Global NSEvent monitor for .leftMouseUp
+[ ] Filter: cursorInNotchZone() AND event.clickCount == 2
+[ ] When S0 active: → openStage4()
+[ ] When S1A or S1B active: → primaryAction() — NOT S4 (Z-index rule)
+[ ] When S3 active: → openStage4() (content swaps in place)
+[ ] Notch hit area: notchW + 20pt wide, notchH + 10pt tall
+
+Z-INDEX HIERARCHY (strict priority):
+  S4 hotkey (⌘⇧Space) > S1A/S1B interaction > S4 double-click
+  If S1A is showing: double-click fires S1A primary action (not S4)
+  To reach S4 while S1A showing: MUST use ⌘⇧Space
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 13 — BUTTON PLACEMENT (AI-determined, learned per person)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEFAULT PLACEMENT (Week 1, before learning):
+
+  Type         │ Left (swipe left)  │ Middle (click only) │ Right (swipe right)
+  ─────────────┼────────────────────┼─────────────────────┼───────────────────
+  task         │ Not yet            │ Later               │ Done ✓
+  meal         │ Skip               │ Done                │ Going now
+  class        │ Skip               │ —                   │ On my way
+  exercise     │ Skip today         │ Later               │ Starting now
+  deadline     │ Move to 8pm        │ +30m                │ Start now (red)
+  lazy nudge   │ 10 more min        │ Dismiss             │ Get back to it
+  timer up     │ +15 min            │ —                   │ Done ✓
+  break end    │ 5 more min         │ Tomorrow            │ Back now
+
+RULE: Swipe right = rightmost button. Swipe left = leftmost button. Always.
+NOTE: Middle button = click only, NEVER swipeable.
+
+LEARNING LOOP:
+[ ] Week 1: use default placement from table above
+[ ] Track press_count[notif_type][action][context_bucket] after each tap
+[ ] Week 2+: most pressed action in context → moves to RIGHT (swipe right)
+[ ] Example: skip lunch 4 of 5 times → "Skip" moves to right → hint flips: "← going · skip →"
+[ ] Month 1: context-conditional placement (breakfast Mon=skip right, Sat=going right)
+[ ] ALWAYS: hint text "← [leftLabel] · [rightLabel] →" shows current placement
+[ ] Hint text updates immediately when placement adapts
+[ ] Never surprise the user — hint text is always accurate
+
+IMPLEMENTATION:
+[ ] ButtonPlacementEngine.swift: reads from semantic_profile.json
+[ ] func rightAction(for type: String, context: ContextBucket) -> NotchAction
+[ ] func leftAction(for type: String, context: ContextBucket) -> NotchAction
+[ ] Updates ButtonPlacement in semantic_profile after each tap via LearningEngine
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 14 — PRIORITY SCORING FORMULA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  P = (U×0.35) + (I×0.25) + (E×0.20) + (C×0.15) + (D×0.05)
+
+[ ] assert(0.35+0.25+0.20+0.15+0.05 == 1.0) at startup — fatal if wrong
+[ ] Show as "P=8.4" in SF Mono 9.5pt textTertiary next to tasks in S3
+
+U = Urgency (0–10):
+[ ] U = 10 × exp(-0.15 × hoursUntilDue)
+[ ] Overdue: U = 10
+[ ] No deadline: U = 2
+[ ] Due < 2h: U clamps to minimum 7.5
+
+I = Importance (0–10):
+[ ] priority 1 = 10, priority 2 = 7, priority 3 = 4, priority 4 = 1, unset = 3
+[ ] Postpone penalty: I -= 0.5 × postponeCount (min 0)
+
+E = Energy match (0–10):
+[ ] E = 10 × min(1, currentEnergy / taskRequirement)
+[ ] Energy curve by hour: 8–12 = 9, 12–14 = 6, 14–17 = 8, 17–20 = 7, else 4
+[ ] Task energy requirements: deepWork=6.5, creative=6, admin=3, meal=1
+[ ] Skip meal: reduce afternoon energy estimate by 0.5
+
+C = Context (0–10):
+[ ] Relevant app is frontmost: C = 10
+[ ] Relevant app is running (not front): C = 9
+[ ] Relevant app not running: C = 7
+[ ] No app relevance (general task): C = 5
+[ ] In class (USDI calendar event): C = 0 (suppress task entirely)
+
+D = Momentum (0–10):
+[ ] D = 10 × (1 - h/72) for h between 6 and 72 hours since creation
+[ ] h < 6 or h > 72: D = 0
+
+SKIP PENALTY (applied at end):
+[ ] P_final = P × pow(0.8, skipCount)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 15 — EVR INTERRUPTION GUARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  EVR = p_forgotten × p_action × (benefit - cost_missing) - COI
+
+[ ] EVR runs BEFORE every notification fires — it is the gatekeeper
+[ ] p_forgotten = 1 - 1/(1+exp(-0.1 × minutesSinceSeen))
+[ ] p_action = loaded from SemanticProfile.W_value per type+context (default 0.60)
+[ ] COI = base 2.0 × attentionMultiplier × timeMultiplier
+
+Attention multipliers:
+[ ] inClass (USDI event active): 4.0×
+[ ] deepWork (same app >20min): 2.5×
+[ ] idle > 10min: 0.5×
+[ ] normal: 1.0×
+
+Time multipliers:
+[ ] interruptionGap < 30min since last notification: 1.8×
+[ ] else: 1.0×
+
+DECISION:
+[ ] EVR > 0: fire notification (show S1A)
+[ ] EVR ≤ 0: queue silently, retry in 5min (max 6 retries before giving up)
+[ ] SAFETY OVERRIDE: if P_urgency > 8.0, fire REGARDLESS of EVR
+[ ] EVR check runs in InterruptionGuard.swift before every DataStore alert push
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 16 — SELF-LEARNING ALGORITHM (4 layers)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAYER 1 — W SCORE (EVR updater):
+  W_new = W_old × 0.85 + signal × 0.15
+
+[ ] primary tapped:    signal = 1.0  (right button, swipe right)
+[ ] secondary tapped:  signal = 0.5  (left button, swipe left)
+[ ] dismissed <2s:     signal = -0.3 (saw it, not relevant)
+[ ] ignored 30s:       signal = -0.5 (didn't even look)
+[ ] W clamped 0.0–1.0
+[ ] W ≥ 0.60: show every time
+[ ] W 0.30–0.59: show every other time
+[ ] W < 0.30: suppress
+[ ] W < 0.10: dead (user must re-enable via S4 chat: "restart breakfast reminders")
+[ ] Urgency > 8: show regardless of W
+[ ] Context key format: "{type}_{timeOfDay}_{dayType}" e.g. "meal_morning_weekday"
+[ ] Store: ~/notchly/v2/memory/notification_weights.json
+
+LAYER 2 — CONTEXTUAL BANDIT:
+[ ] Context vector: hour_bucket(2h), day_of_week, has_class, deadline_today, energy_bucket, frontmost_category
+[ ] Q(context, action) updated with α=0.15 after each response
+[ ] Rewards: +1.0 primary, +0.4 secondary, -0.3 dismissed, -0.6 ignored
+[ ] Policy determines both button placement and show/suppress decisions
+
+LAYER 3 — CAP PENALTY (prevents over-learning early):
+[ ] β = 0.2 + 0.8 × (1 - exp(-dataPoints/100))
+[ ] Week 1: β ≈ 0.20 (very conservative, barely modifies)
+[ ] Month 1: β ≈ 0.79 (mostly learned)
+[ ] Month 3: β ≈ 0.99 (fully confident)
+[ ] penalty = β × COI × interruptionsToday
+[ ] P_adjusted = P_final - penalty
+[ ] Urgency > 8: bypass CAP always
+
+LAYER 4 — PROACTOR TIMING:
+[ ] Track response_time_bucket[type][halfHourBucket] per interaction
+[ ] After 14+ days: optimal_time = argmax(response_bucket[type])
+[ ] new_fire_time = scheduled_time × 0.70 + optimal_time × 0.30
+[ ] Gradually converges over 6–8 weeks
+
+WEEKLY REBUILD (Sunday 23:00):
+[ ] NSBackgroundActivityScheduler fires weekly
+[ ] Read all episodic.jsonl entries from past 7 days
+[ ] Compute: energy_by_hour, W_values, optimal_fire_times, button_placement
+[ ] Write to semantic_profile.json atomically (Data.write options: .atomic)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 17 — MEMORY SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EPISODIC LOG (most critical — APPEND ONLY):
+[ ] File: ~/Documents/notchly/v2/memory/episodic.jsonl
+[ ] Use FileHandle.seekToEndOfFile() + write() — NEVER read+rewrite
+[ ] One JSON line per user action
+[ ] Each line: { ts, action, notif_type, task_title, context, delay_s, W_before, W_after }
+[ ] Write is atomic per line (FileHandle.write is atomic at kernel level)
+[ ] Never clear or truncate — it is the ground truth of the user's behavior
+
+SEMANTIC PROFILE (derived weekly):
+[ ] File: ~/Documents/notchly/v2/memory/semantic_profile.json
+[ ] Write: Data.write(to: url, options: .atomic)
+[ ] Read at app launch to load all learned preferences
+[ ] Contents: W_values, energy_by_hour, optimal_fire_times, button_placement
+
+WORKING MEMORY (daily reset):
+[ ] File: ~/Documents/notchly/v2/working_memory.json
+[ ] Write: Data.write(to: url, options: .atomic)
+[ ] Resets at midnight via NSTimer or NSBackgroundActivityScheduler
+[ ] Contains: current_task, queue_snapshot, done_today, missed_count, idle_minutes, todays_goal
+
+FILE CONTRACT:
+[ ] ALL Swift file writes: Data.write(to: url, options: .atomic) — no exceptions
+[ ] ALL Python file writes: write to .tmp then os.rename() — atomic swap
+[ ] JSONL append: FileHandle only — never load-modify-save the whole file
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 18 — DATA SOURCES & SERVICES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CALENDAR — ONE singleton:
+[ ] CalendarManager.shared (or CalendarReader.shared) — one EKEventStore everywhere
+[ ] Read calendars: primary + USDI B.Des + Hostel Mess + Google Tasks
+[ ] requestFullAccessToEvents (macOS 14+) with #available fallback
+[ ] Class detection: USDI calendar OR title contains: lecture/class/lab/studio/crit/seminar/workshop
+[ ] Meal detection: Hostel Mess calendar events
+[ ] Refresh every 5 minutes (not 60s — meals close in 15m windows)
+[ ] Add tomorrow events to nextEvent logic if no more events today
+[ ] On upcoming event < 10min: create PendingAlert, write to pending_alerts.json
+
+DATASTORE — FSEvents (not 15s polling):
+[ ] Replace Timer 15s poll with DispatchSource.makeFileSystemObjectSource
+[ ] Watch: pending_alerts.json, schedule.json, working_memory.json
+[ ] Latency: 0.1s max delivery
+[ ] On change: read and process immediately
+[ ] 15s poll kept as fallback if FSEvents fails to deliver
+
+VOLUME MONITOR:
+[ ] Move polling Timer to DispatchQueue.global(qos: .utility) — off main thread
+[ ] OR replace with AudioObjectAddPropertyListener for event-driven updates
+[ ] Volume HUD (S1Volume) must NOT hijack S1A/S1B — check currentStage before showing
+
+NOW PLAYING:
+[ ] Add com.apple.podcasts.notification.playerInfo observer
+[ ] Current: Music + Spotify ✅
+
+BLUETOOTH BATTERY:
+[ ] Filter by device.addressString when parsing ioreg output (multiple devices)
+[ ] OR replace subprocess with IOKit direct: IORegistryEntryCreateCFProperty(entry, "BatteryPercent")
+[ ] Add Mac's own battery to S3: IOPMBatteryInfo read
+
+IDLE DETECTION:
+[ ] IOKit: HIDIdleTime from IOHIDSystem — returns nanoseconds
+[ ] idleSeconds = HIDIdleTime / 1_000_000_000.0
+[ ] Poll every 60s in ContextEngine
+[ ] Idle > 1200s (20min): lazy state
+[ ] Idle > 18000s (5h) + hour 5–11 AND NSWorkspace.didWakeNotification: morning briefing
+
+APP FOCUS:
+[ ] NSWorkspace.shared.notificationCenter for .didActivateApplicationNotification
+[ ] Track: current bundleID + switch timestamp
+[ ] Deep work = same bundleID frontmost > 20min with no app switches
+[ ] Expose as ContextEngine.shared.isDeepWork: Bool
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 19 — BDI COGNITIVE ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] BDIAgent.shared processes ContextSnapshot every 60s
+[ ] Runs on background queue, results dispatched to main
+
+BELIEFS (derived from sensors):
+[ ] user.isInClass — USDI calendar event active now
+[ ] user.isDeepWork — same app frontmost > 20min
+[ ] user.isIdle — IOKit idle > 20min
+[ ] task.deadlineToday — any task hoursUntilDue < 24
+[ ] app.isRelevant — task title keyword matches current frontmost bundle ID
+
+INTENTIONS (what the BDI decides to do):
+[ ] enterClassMode → suppress all notifications except urgency > 8
+[ ] showAppButton → add contextual launch button to S2A card
+[ ] escalateDeadline → override urgency when hoursUntilDue < 6
+[ ] autoReschedule → task postponed 3× → move to tomorrow 10am
+[ ] showTransitionNudge → class ending in 10min → prepare user
+[ ] sendMotivation → idle > 20min during work window
+[ ] diagnosisMode → same task rejected 3× → trigger S1.5 Diagnosis
+
+APP KEYWORD → BUNDLE ID MAP:
+[ ] blender       → org.blender.Blender
+[ ] figma         → com.figma.Desktop
+[ ] xcode         → com.apple.dt.Xcode
+[ ] notion        → notion.id
+[ ] terminal      → com.apple.Terminal
+[ ] claude        → com.anthropic.claudefordesktop
+[ ] premiere      → com.adobe.premierepro
+[ ] after effects → com.adobe.aftereffects
+[ ] photoshop     → com.adobe.photoshop
+[ ] illustrator   → com.adobe.illustrator
+[ ] vs code       → com.microsoft.VSCode
+[ ] davinci       → com.blackmagicdesign.resolve
+[ ] procreate     → com.savage.procreate
+[ ] chrome        → com.google.Chrome
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 20 — DYNAMIC SCHEDULER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Runs after EVERY user action (Done, Skip, Later, Break)
+[ ] Score all incomplete tasks with P formula
+[ ] Filter C=0 tasks (class time — suppress entirely)
+[ ] Sort descending by P_final
+[ ] Find free blocks from calendar (gaps between events)
+[ ] Match: high energy slots → deep work tasks, low energy → admin
+[ ] Skip class slots entirely (no scheduling during class)
+[ ] Apply 15min buffer after class ends
+[ ] Apply 20min transit buffer before first task after any class
+[ ] Apply 10min context-switch buffer between different task types
+[ ] Tasks not fitting today → tomorrow (don't overflow silently)
+[ ] Deadline today + won't fit → ESCALATE urgency override
+[ ] AI proposes specific time — never asks "when?" — always decides
+[ ] Postpone 3×: auto-move to tomorrow 10am, reset postponeCount = 0
+[ ] Show continuity: "Moved [task] to tomorrow — postponed 3×"
+[ ] ALWAYS show exactly one suggestion — never a list, never a menu
+[ ] Free period < 25min: admin/review tasks only (not deep work)
+[ ] Free period 25–60min: one task matching the duration
+[ ] Free period > 60min: highest P_final task
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 21 — BEHAVIOURAL SAFEGUARDS (5 rules — do not skip any)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. DIAGNOSIS MODE (task purgatory — rejected 3×):
+[ ] Trigger: task.rejectionCount ≥ 3 (increments on Skip/Later)
+[ ] Position: pill drops 40pt LOWER than normal
+[ ] Background: warm gray rgba(60,58,55,0.95) — NOT the dark pill color
+[ ] Buttons: VERTICAL STACK (breaks horizontal muscle memory — critical)
+[ ] Options: [Too big → split] [Wrong time → reschedule] [Not needed → remove]
+[ ] "Too big": show 1-line text field for "first small step" — user types it
+[ ] "Wrong time": auto-reschedule to next energy≥8 time slot
+[ ] "Not needed": confirmation then delete
+[ ] Dismiss twice without choosing: move to tomorrow silently
+[ ] Reset rejectionCount when task rescheduled to new time
+
+2. GLASS BREAK (emergency override):
+[ ] Option key held during wellness/burnout alert → button transforms red
+[ ] Text: "Deadline Mode: Disable Sensors"
+[ ] Activates: disables wellness + burnout + idle detection until midnight
+[ ] Midnight timer resets glass break state
+[ ] Invisible in normal use — only discoverable by holding Option
+
+3. BURNOUT PILL (DIFFERENT from diagnosis mode — common mistake):
+[ ] Position: drops 40pt lower (same position as diagnosis)
+[ ] Colors: INVERTED — red background, light text (NOT warm gray)
+[ ] Buttons: HORIZONTAL layout (normal, same as S1A)
+[ ] This combo (red bg + horizontal) breaks muscle memory without gray cue
+[ ] The two differences from diagnosis: RED background + HORIZONTAL buttons
+
+4. MORNING GATE (prevents 3am false wake):
+[ ] Briefing fires ONLY when ALL THREE true simultaneously:
+    1. NSWorkspace.didWakeNotification received
+    2. systemIdleSeconds() > 18000 (5 hours inactive)
+    3. currentHour >= 5 AND currentHour < 11
+[ ] 3am laptop open → stays completely silent — morning gate fails condition 3
+
+5. POSTPONE 3× AUTO-RESCHEDULE:
+[ ] task.postponeCount ≥ 3 → move to tomorrow 10am automatically
+[ ] No confirmation prompt — just does it
+[ ] Continuity banner: "Moved [task] to tomorrow — postponed 3×"
+[ ] Reset postponeCount = 0 after move
+[ ] postponeCount is separate from rejectionCount
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 22 — CONTINUITY BANNER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Appears after ANY button tap in S1A, S1B, S2A, S2B, or S4
+[ ] Position: y = notchH + 6pt (just below pill bottom edge)
+[ ] Content: 4pt green dot · confirmation text 11pt rgba(255,255,255,0.60)
+[ ] Background: #0f0f0f, cornerRadius 8pt
+[ ] Appear: from y=-(notchH+10) opacity=0 → spring(0.45, 0.72)
+[ ] Auto-dismiss: after 4.0 seconds → easeOut(0.3s)
+[ ] Only ONE banner at a time (new action replaces in-progress banner)
+
+MESSAGES (exact text):
+[ ] task done:     "[task title] done · [next task] loading"
+[ ] skip:          "Skipped · [next task] loading"
+[ ] later:         "Moved later · [next task] loading"
+[ ] meal confirmed:"Noted · mess closes in [X]m"
+[ ] skip meal:     "Skipping lunch · energy adjusted"
+[ ] break started: "Break started · resumes in [X]m"
+[ ] rescheduled:   "Moved [task] to [time]"
+[ ] extended:      "+15m added · [timeLeft] remaining"
+[ ] postpone 3×:   "Moved to tomorrow — postponed 3×"
+[ ] paused:        "Paused ⏸"
+[ ] resumed:       "Resumed ▶"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 23 — FULL DAY SCENARIOS (context-aware behavior)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAKE DETECTION (06:00–09:30):
+[ ] didWakeNotification + idle > 5h + hour 5–11 = morning briefing
+[ ] Show: exercise prompt OR deadline warning (deadline takes priority)
+[ ] Exercise prompt: only if no class before 09:00
+[ ] "Good morning [name]" on first open — time-aware greeting
+[ ] Breakfast warning 15min before mess closes
+
+CLASS MODE (during USDI calendar event):
+[ ] All task alerts suppressed (except urgency > 8)
+[ ] Pill shows: subject + "· class ·" + time remaining — STATIC, no pulsing
+[ ] Mess closing < 5min: shows as sub-text below class title (not as alert)
+[ ] One-tap idea capture: tap notch → text field → saves to Notion
+[ ] Class ending in 10min: "Next: [first free-period task]" prep nudge
+
+FREE PERIOD (gap between classes):
+[ ] Gap < 25min: admin tasks only (not deep work)
+[ ] Gap 25–60min: one task matching duration (P score + duration filter)
+[ ] Gap > 60min: highest P_final task regardless of type
+[ ] ALWAYS one suggestion — never a list, never "what do you want to do?"
+[ ] Show time context: "35m free before [next class]"
+
+HOSTEL TRANSIT:
+[ ] 15min buffer after class ends before any task suggestion
+[ ] First task starts 20min after class end (transit time)
+[ ] Never mark task "late" before transit buffer expires
+
+DISTRACTION:
+[ ] Social/YouTube app frontmost > 20min during work window + deadline today → stakes nudge
+[ ] Message: always about the stakes, NEVER "you've been on YouTube"
+[ ] Example: "Curry & Beans logo due Friday — haven't started today"
+[ ] Max 2 distraction nudges per evening, then 30min silence window
+
+NAP MODE:
+[ ] Declared via S4: "taking a nap" → set idle suppress timer
+[ ] Undeclared: idle > 40min during day → "Resting or stuck?"
+[ ] Nap declared: pill goes dark (dot hidden), energy estimate adjusts
+
+DAY CLOSEOUT (last task done OR 23:00):
+[ ] Summary banner: done count + missed count
+[ ] Tomorrow queue: score and set top 5 tasks silently
+[ ] Sleep warning: if class before 09:00 tomorrow
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 24 — OPENCLAW INTEGRATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE PROTOCOL (all in ~/Documents/notchly/v2/):
+[ ] schedule.json          — OpenClaw writes, DataStore reads
+[ ] pending_alerts.json    — OpenClaw writes, DataStore reads via FSEvents
+[ ] working_memory.json    — OpenClaw writes, DataStore reads
+[ ] cache/notion_cache.json — OpenClaw writes, DataStore reads
+[ ] chat_request.json      — Notchly writes (on S4 send), OpenClaw reads
+[ ] openclaw_response.json — OpenClaw writes, Notchly polls
+
+CHAT REQUEST SCHEMA:
+  { "id": "uuid", "message": "...", "context": { active_task, events, memory }, "timestamp": "..." }
+
+OPENCLAW RESPONSE SCHEMA:
+  { "request_id": "uuid", "message": "...", "action": { "type": "reschedule_task|add_task|dismiss_alert|set_goal|none", "payload": {} }, "timestamp": "..." }
+
+[ ] S4 sendMessage() writes chat_request.json (Data.write options: .atomic)
+[ ] Poll openclaw_response.json for 5s after sending
+[ ] If response.request_id matches AND timestamp < 30s old: use OpenClaw response
+[ ] If no match in 5s: fall back to Claude API (claude-sonnet-4-6)
+[ ] response.action → if not "none": execute immediately via DataStore, don't wait for poll
+[ ] Indicator in S4 header: "OpenClaw" or "Claude" label (dim, 9pt)
+[ ] Without OpenClaw: app works fully — Claude API is the default brain
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 25 — PYTHON BRAIN DAEMON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] brain_loop.py: runs every 90s via launchd KeepAlive
+[ ] Reads working_memory.json + semantic_profile.json
+[ ] Writes pending_alerts.json atomically (tmp → os.rename)
+[ ] scorer.py: mirrors exact Swift P formula, same weights, asserts sum==1.0 at import
+[ ] notion_sync.py: reads Notion Tasks DB every 5min, writes notion_cache.json atomically
+[ ] gcal_sync.py: reads all 4 Google Calendars every 5min, writes gcal_cache.json atomically
+[ ] scheduler.py: proposes specific times — never asks "when?"
+[ ] ALL Python writes: write to .tmp then os.rename() — atomic swap, never partial reads
+
+LaunchAgents (both needed):
+[ ] ~/Library/LaunchAgents/com.notchly.app.plist     — starts Swift app
+[ ] ~/Library/LaunchAgents/com.notchly.brain.plist   — starts Python daemon
+[ ] Both: RunAtLoad=true, KeepAlive=true
+[ ] Logs: ~/Documents/notchly/logs/app.log, brain.log, brain_err.log
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 26 — DESIGN TOKENS (implement once in NotchlyDesign.swift, use everywhere)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COLORS:
+  background:    #0d0d0d
+  surface:       #111111
+  borderNormal:  rgba(255,255,255,0.07)
+  textPrimary:   rgba(255,255,255,0.90)
+  textSecondary: rgba(255,255,255,0.45)
+  textTertiary:  rgba(255,255,255,0.22)
+  green:         #1D9E75
+  amber:         #BA7517
+  red:           #E24B4A
+  blue:          #4A90E2
+  purple:        #7F77DD
+  coral:         #D85A30
+  swipeRight:    rgba(29,158,117, 0→0.55)  ← never exceeds 55% opacity
+  swipeLeft:     rgba(80,80,80,   0→0.40)  ← NEVER red, never green
+
+TYPOGRAPHY (all SF Pro — NOT SF Rounded):
+  notifTitle:    12pt medium
+  timer:         12pt medium SF Mono #1D9E75
+  hintText:      9.5pt regular rgba(255,255,255,0.22)
+  buttonLabel:   10.5pt medium
+  taskTitle:     12.5pt medium
+  sectionLabel:  9pt semibold uppercase tracking 0.08em
+  priorityScore: 9.5pt regular SF Mono textTertiary
+  continuityText:11pt regular rgba(255,255,255,0.60)
+  chatInput:     11.5pt regular
+  missedLabel:   10pt bold red uppercase tracking 0.06em
+
+CORNER RADII (AsymmetricRoundedRect — topRadius / bottomRadius):
+  S0:    top=6   bottom=10
+  S1:    top=8   bottom=14
+  S1.5:  top=10  bottom=16
+  S2:    top=12  bottom=20
+  S3:    top=16  bottom=24
+  S4:    top=16  bottom=24
+
+SPRINGS (named constants in ND.Motion):
+  pillSpring:       spring(response:0.42, dampingFraction:0.68)
+  expandSpring:     spring(response:0.50, dampingFraction:0.88)
+  hoverExpand:      spring(response:0.35, dampingFraction:0.75)
+  snapBack:         spring(response:0.32, dampingFraction:0.68)
+  nudgeSpring:      spring(response:0.28, dampingFraction:0.65)
+  suckIntoNotch:    easeIn(0.22s) + scaleX(0.1) + translateY(-notchH)
+  continuitySpring: spring(response:0.45, dampingFraction:0.72)
+  thresholdSnap:    easeInOut(0.12s)
+  pulseOut:         easeOut(0.30s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 27 — CODE RULES (never break any of these)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Every Timer: private var name: Timer? + deinit { name?.invalidate() }
+[ ] JSONL append: FileHandle O_APPEND only — NEVER load+rewrite
+[ ] All Swift file writes: Data.write(to: url, options: .atomic)
+[ ] ONE EKEventStore: CalendarManager.shared — never create a second one
+[ ] No file > 400 lines — split into subcomponents
+[ ] Zero force unwraps (!) — always guard let or if let
+[ ] NSScreen.screens never in SwiftUI body — cache in NotchDimensions
+[ ] App Sandbox = false in entitlements (system APIs require this)
+[ ] git commit after every working feature, meaningful message
+[ ] P formula weights assert sum == 1.0 at startup (fatalError if wrong)
+[ ] All DispatchAsync to main when updating @Published vars
+[ ] No magic numbers — use ND.* tokens or named constants
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 28 — PERMISSIONS & FIRST LAUNCH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INFO.PLIST:
+[ ] LSUIElement = true (no Dock icon, no menu bar)
+[ ] NSCalendarsUsageDescription = "Notchly reads your calendar to schedule tasks."
+[ ] NSAppleEventsUsageDescription set
+
+ENTITLEMENTS:
+[ ] com.apple.security.app-sandbox = false (required — see Block 27)
+
+FIRST LAUNCH FLOW:
+[ ] Check UserDefaults "notchly_setup_complete" — skip if already done
+[ ] Step 1: Request calendar — show granted/denied result
+[ ] Step 2: Request Accessibility — open System Settings, poll AXIsProcessTrusted every 2s
+[ ] Step 3: "Start" — begin normal operation
+[ ] After permissions: start ContextEngine, load calendar, show first suggestion
+[ ] Create directories: ~/Documents/notchly/v2/memory/, logs/, cache/
+
+PERMISSION SUMMARY:
+  Calendar    → EKEventStore.requestFullAccessToEvents  → show events, create alerts
+  Accessibility → AXIsProcessTrustedWithOptions         → global hotkeys via CGEventTap
+  (no permission needed) NSTrackingArea                 → hover detection
+  (no permission needed) CoreAudio                      → volume
+  (no permission needed) IOBluetooth                    → BT device list
+
+[ ] If Accessibility denied: dim amber dot in S0, hotkeys silently fail, show note in S4
+[ ] Launch at Login: SMAppService.mainApp.register() (macOS 13+) in Settings
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 29 — DATA SCHEMA (source of truth)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ScheduleTask (add missing fields):
+  id: String, title: String, duration_minutes: Int
+  start_time: String?     ← MISSING — needed for elapsed calculation
+  due: String?, status: String, project: String?
+  priority: Int, rejection_count: Int = 0   ← MISSING — for Diagnosis Mode
+  postpone_count: Int = 0  ← MISSING — for 3× auto-reschedule
+  app_hint: String?        ← MISSING — bundle ID for app-specific buttons
+  requires_diagnosis: Bool = false  ← MISSING
+
+minutesLeft fix:
+  minutesLeft = duration_minutes - minutesElapsed
+  minutesElapsed = (Date() - startTime) / 60  (requires start_time)
+
+PendingAlert (use existing action_left/action_right):
+[ ] Wire to NotchState.leftAction/rightAction: if pendingAlerts.first?.action_left != nil, use it
+[ ] priority field: if priority == 1 bypass EVR guard, show immediately
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 30 — KNOWN BUGS (fix in order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  #  │ Sev  │ Description                                   │ File                    │ Fix
+  ───┼──────┼───────────────────────────────────────────────┼─────────────────────────┼────────────────────────────────
+  1  │ HIGH │ Window on external monitor (X=3227) not notch  │ NotchWindowController   │ builtinScreen() must win always
+  2  │ HIGH │ minutesLeft returns duration not remaining      │ DataStore.swift         │ Add start_time, compute elapsed
+  3  │ HIGH │ No swipe left/right on notifications            │ NotchRootView           │ Route deltaX in registerScroll
+  4  │ HIGH │ ⌘⇧Space hotkey not implemented                  │ NotchWindowController   │ Carbon RegisterEventHotKey
+  5  │ HIGH │ S4 chat is a stub (no AI)                       │ Stage4ChatView          │ Wire Claude API + OpenClaw
+  6  │ MED  │ action_left/right ignored in NotchState         │ NotchState.swift        │ Use from pendingAlerts.first
+  7  │ MED  │ "Done" doesn't load next task                   │ NotchState.swift        │ Call applySchedule after done
+  8  │ MED  │ Hover exit fires immediately (edge flicker)     │ NotchWindowController   │ 200ms debounce setHover(false)
+  9  │ MED  │ Timer label is static (not cycling)             │ Stage1TimerView         │ 4s cycleIndex state + Timer
+  10 │ MED  │ No progress arc in timer view                   │ Stage1TimerView         │ Arc overlay driven by timerProgress
+  11 │ MED  │ S2B missed panel not implemented                │ —                       │ New Stage2BMissedView
+  12 │ MED  │ S3 task circle buttons no tap handler           │ Stage3DashboardView     │ .onTapGesture → markTaskDone
+  13 │ LOW  │ No "Quit Notchly" in context menu               │ NotchRootView           │ Add NSApp.terminate(nil)
+  14 │ LOW  │ Calendar only refreshes every 60s (too slow)    │ CalendarManager         │ Change to 5min + meal-close alerts
+  15 │ LOW  │ BT battery ioreg picks wrong device             │ BatteryMonitor          │ Filter by device.addressString
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOCK 31 — COMPLETE TESTING CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WINDOW & POSITIONING:
+[ ] S0 centered on physical notch (14" M3 Pro)
+[ ] S0 centered on physical notch (16" M3 Max)
+[ ] Non-notch Mac (Air M2): window top-center, no crash
+[ ] External monitor connected: window on BUILT-IN screen only
+[ ] Screen arrangement changed while running: repositions < 0.5s
+[ ] Display sleep/wake: window repositions correctly
+[ ] Mission Control / Exposé: window stays on top
+[ ] Full-screen app on built-in: Notchly still visible above it
+[ ] No Dock icon, no menu bar icon
+[ ] Not in Cmd+Tab switcher
+
+STAGE 0:
+[ ] Dot dims correctly (alert=orange, task=green, music=blue, clear=gray 0.06)
+[ ] Dot invisible in deep focus mode (same app >20min)
+[ ] Dot fades in 0.4s when collapsing to S0
+[ ] S0 truly blends with hardware notch (no visible pill border)
+
+STAGE 1A — NOTIFICATION:
+[ ] Alert appears within 0.1s of pending_alerts.json change (FSEvents)
+[ ] Correct icon/dot color per alert type
+[ ] Auto-collapse exactly 30s from appearance (no interaction)
+[ ] Hover: hint text appears BEFORE bar grows
+[ ] Hover: bar grows with buttons sliding from inside (not floating)
+[ ] Button labels match action_left/action_right from JSON
+[ ] Right button tap → action fires → continuity banner → S0
+[ ] Left button tap → action fires → continuity banner → S0
+[ ] Cursor leaves → bar shrinks, buttons slide back in
+[ ] Missed on timeout → added to missedAlerts array
+[ ] Volume HUD does NOT appear while S1A active
+
+STAGE 1B — TIMER:
+[ ] Active task appears when schedule.json has status:"active"
+[ ] Timer counts down live (every 1 second)
+[ ] Timer format: "1h 18m" for >60min, "18:42" for ≤60min
+[ ] Label cycles: countdown → elapsed → percent (every 4s)
+[ ] Cycle pauses when hovered
+[ ] Tap timer label → pauses (gray + ⏸)
+[ ] Tap again → resumes (green)
+[ ] Haptic on pause/resume
+[ ] Progress arc fills correctly based on elapsed/duration
+[ ] S1B never auto-dismisses
+[ ] At 0:00: amber color, shows buttons for 10s
+[ ] Hover: Done/Break buttons appear (same slide mechanic)
+
+STAGE 1.5 — HOVER:
+[ ] Appears on cursor enter hover zone (400×75pt)
+[ ] Shows active task + next task correctly
+[ ] Missed badge visible when pendingAlerts > 0
+[ ] NO buttons — completely read only
+[ ] Exits immediately on cursor leave (after 200ms debounce)
+[ ] Scroll ≥ 50pt → S2A
+[ ] Scroll ≥ 120pt → S3
+
+SWIPE GESTURES:
+[ ] Right swipe 40pt+: green wash + suck into notch + right action fires
+[ ] Left swipe 40pt+: warm gray wash + suck into notch + left action fires
+[ ] Swipe < 40pt: spring back, 30s timer resets
+[ ] Green wash maximum 55% opacity — never exceeds
+[ ] Left wash is WARM GRAY rgba(80,80,80) — never red
+[ ] Button scales 1.08× in swipe direction
+[ ] Opposite button fades to 20%
+[ ] Haptic at threshold
+[ ] Suck-back animation: easeIn(0.22s)
+[ ] Edge pulse fades: easeOut(0.30s)
+[ ] Affordance nudge fires only ONCE (UserDefaults flag set after)
+[ ] Hint text matches actual current button placement
+
+STAGE 2A — NOWCARD:
+[ ] Opens on single tap of S15 OR scroll 50pt
+[ ] Mouse away: IMMEDIATE collapse to S0 (no delay)
+[ ] All 8 button set types render correctly (task/meal/class/exercise/deadline/lazy/timer-up/break-end)
+[ ] Deadline type: right button is red (#E24B4A)
+[ ] App launch button: "Open [App]" if not running, "Switch to [App]" if running
+[ ] App launch button hidden when app is already frontmost
+[ ] Middle button: click only — swipe never triggers it
+
+STAGE 2B — MISSED:
+[ ] Shows instead of S2A when missedAlerts > 0
+[ ] Shows last 2 missed items, reversed
+[ ] Tap item → inline expand with 3 buttons
+[ ] Only 1 item expanded at a time
+[ ] "see all" → S3 Dashboard
+[ ] "✕" → clear all + S0
+[ ] Mouse away: immediate collapse
+
+STAGE 3 — DASHBOARD:
+[ ] Task circle tick → marks done → strikethrough animation → row fades
+[ ] Calendar section shows current event OR next 2 events
+[ ] Now Playing: correct song + artist + progress bar
+[ ] Bluetooth battery bar colors (red < 20%, amber < 40%)
+[ ] AI goal card shows workingMemory.todays_goal
+[ ] Double-tap → S4 chat swaps in
+[ ] Mouse away: immediate collapse
+
+STAGE 4 — CHAT:
+[ ] ⌘⇧Space opens from any app (not just Notchly)
+[ ] Double-tap S0 opens S4
+[ ] Context peek appears on schedule keywords (no API call)
+[ ] AI responds within 5s (OpenClaw) or 8s (Claude API fallback)
+[ ] Active session pins: mouse away does NOT close
+[ ] Idle 60s → closes and clears
+[ ] Re-enter within 60s → chat preserved
+[ ] S3→S4 via double-tap: mouse away = IMMEDIATE close
+[ ] ✕ button closes and clears
+
+SCROLL (phase-aware):
+[ ] Mid-gesture hold for 1s does NOT drop accumulator
+[ ] Momentum scroll (post finger lift) does NOT trigger stage changes
+[ ] Phase .ended → 0.45s reset timer, not immediate
+[ ] Scroll up from S3 → S0
+
+LEARNING & ALGORITHMS:
+[ ] After 5 ignores of same type: notification suppressed (W < 0.30)
+[ ] After 5 primary taps: W > 0.60, shows every time
+[ ] W scores survive app restart (file persisted)
+[ ] Most pressed action moves to right after week 2
+[ ] Weekly rebuild fires Sunday 23:00
+[ ] P formula weights assert == 1.0 at startup (fatalError if not)
+[ ] EVR runs before every notification — high attention multiplier suppresses
+
+SAFEGUARDS:
+[ ] Diagnosis Mode: drops 40pt + gray bg + VERTICAL buttons
+[ ] Burnout Pill: drops 40pt + RED bg + HORIZONTAL buttons (not gray)
+[ ] Morning gate: all 3 conditions required (3am open = silence)
+[ ] Postpone 3× → tomorrow 10am, continuity shows, count resets
+[ ] Glass Break: Option key transforms button red, disables sensors till midnight
+
+SYSTEM:
+[ ] Calendar permission requested on first launch
+[ ] Accessibility permission requested on first launch
+[ ] App starts on login (launchd plist)
+[ ] App restarts if it crashes (KeepAlive=true)
+[ ] Zero force unwraps in build (grep "!" to verify)
+[ ] Every Timer has stored var + deinit invalidate
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUILD COMMANDS & TEST DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Build
 cd ~/Documents/notchly/notchly_v3codex
-swift build
-
-# Release build
 swift build -c release
 
 # Install
-pkill -x NotchlyV2
+pkill -x NotchlyV2; sleep 1
 cp .build/release/notchly_v3codex /Applications/NotchlyV2.app/Contents/MacOS/NotchlyV2
 codesign --force --deep --sign - /Applications/NotchlyV2.app
 open /Applications/NotchlyV2.app
-```
 
-### 13.2 Test Data Injection
-```bash
-# Inject a test notification (appears within 15s)
+# Inject test notification (appears within 0.1s with FSEvents, 15s with timer poll)
 cat > ~/Documents/notchly/v2/pending_alerts.json << 'EOF'
-[{"id":"test-1","type":"nudge","title":"Time to focus","message":"You have 2 hours free","created_at":"2026-04-17T10:00:00Z","priority":1,"action_left":"Skip","action_right":"Got it"}]
+[{"id":"t1","type":"meal","title":"Lunch — Kadi Pakouri","message":"Mess closes in 7m","created_at":"2026-04-17T13:00:00Z","priority":1,"action_left":"Skip","action_right":"Going now"}]
 EOF
 
 # Inject active task
 cat > ~/Documents/notchly/v2/schedule.json << 'EOF'
-[{"id":"task-1","title":"Curry & Beans Logo","duration_minutes":90,"due":"2026-04-18T17:00:00Z","status":"active","project":"Client Work","priority":1}]
+[{"id":"task-1","title":"Curry & Beans Logo","duration_minutes":90,"start_time":"2026-04-17T11:00:00Z","due":"2026-04-18T17:00:00Z","status":"active","project":"Client Work","priority":1,"rejection_count":0,"postpone_count":0}]
 EOF
 
 # Clear all
-echo '[]' > ~/Documents/notchly/v2/pending_alerts.json
-echo '[]' > ~/Documents/notchly/v2/schedule.json
-```
+echo '[]' > ~/Documents/notchly/v2/pending_alerts.json && echo '[]' > ~/Documents/notchly/v2/schedule.json
 
-### 13.3 Git Workflow
-```bash
-# Feature branch
-git checkout -b feature/swipe-gestures
+# Check window bounds
+swift - << 'EOF'
+import CoreGraphics, Foundation
+let wins = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String:Any]] ?? []
+for w in wins { if (w["kCGWindowOwnerName"] as? String) == "NotchlyV2" { print(w["kCGWindowBounds"] as Any, "layer:", w["kCGWindowLayer"] as Any) } }
+EOF
 
-# Commit
-git add -A && git commit -m "feat: two-finger swipe on notifications"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+20-DAY BUILD ORDER (start here if you don't know what to do)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Push
-git push origin feature/swipe-gestures
-```
-
-**Remote:** `https://github.com/saikiran9185/notchly.git`
-
----
-
-## 14. PRIORITY QUEUE (What to Build Next)
-
-### Sprint 1 — Core Interactions (P0)
-1. **Swipe left/right gesture** on S1 notifications and S1 timer
-2. **⌘⇧Space global hotkey** to open S4 Chat
-3. **Real AI backend** in Stage 4 (Claude API claude-sonnet-4-6)
-
-### Sprint 2 — Data Correctness (P1)
-4. **Fix external monitor positioning** — built-in screen always wins
-5. **Fix `minutesLeft`** — add `start_time` to ScheduleTask, compute elapsed
-6. **Timer label cycling** — countdown → elapsed → percent every 4s
-7. **`action_left`/`action_right` dynamic labels** from PendingAlert schema
-8. **After "Done": load next task** without collapse delay
-9. **Hover exit debounce** 200ms
-
-### Sprint 3 — Smart Features (P1)
-10. **LearningEngine.swift** — W score algorithm, suppress suppressed alerts
-11. **OpenClaw chat bridge** — write request, poll response
-12. **CalendarManager → PendingAlert** — create alerts for upcoming events < 10m
-13. **S2B missed notifications list** — scrollable with inline reply
-
-### Sprint 4 — Polish (P2)
-14. **Swipe color wash + suck-back animation**
-15. **Context peek in S4** (schedule strip on keyword)
-16. **S3 task circle buttons** — tap to complete
-17. **Mac own battery** in S3 Dashboard
-18. **Launch at Login** toggle in Settings
-19. **"Quit Notchly"** in context menu
-
-### Sprint 5 — Advanced (P3)
-20. **Diagnosis Mode** (rejection count Stage 1.5)
-21. **App-specific action buttons** (Blender, Figma, Xcode detection)
-22. **Weekly summary card** in S3
-23. **Dynamic button placement** (most-pressed action goes right)
-24. **MediaRemote** for universal now-playing
-25. **Bluetooth battery via IOKit** (no subprocess)
+  DAY  │ Goal                                        │ Blocks
+  ─────┼─────────────────────────────────────────────┼────────
+   1   │ Fix window: built-in screen, correct pos     │ 1, 2
+   2   │ S1A full hover + buttons + auto-dismiss      │ 3
+   3   │ S1B timer cycle + pause + arc                │ 4
+   4   │ Scroll depth S0→S1.5→S2→S3                  │ 11
+   5   │ Swipe physics all 4 states                   │ 10
+   6   │ Hotkeys ⌘⇧Space etc + double-click           │ 12
+   7   │ S2A NowCard all 8 button sets                │ 6, 13
+   8   │ S2B missed inline expand                     │ 7
+   9   │ S3 task ticks + calendar + BT                │ 8
+  10   │ S4 chat + context peek + session lock + AI   │ 9
+  11   │ Priority scorer + EVR guard                  │ 14, 15
+  12   │ Learning algorithm 4 layers + W scores       │ 16
+  13   │ Memory system: episodic log + semantic profile│ 17
+  14   │ Data sources: FSEvents, idle, app focus       │ 18
+  15   │ BDI engine + dynamic scheduler               │ 19, 20
+  16   │ All 5 safeguards                             │ 21
+  17   │ Full day scenarios: class, meals, transit     │ 23
+  18   │ Python brain daemon + launchd                │ 25
+  19   │ Onboarding + permissions + launch at login    │ 28
+  20   │ Final tests — every checkbox green            │ 31
