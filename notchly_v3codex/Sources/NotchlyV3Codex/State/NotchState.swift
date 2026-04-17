@@ -283,19 +283,39 @@ final class NotchState: ObservableObject {
         }
     }
 
-    func registerScroll(deltaY rawDeltaY: CGFloat, isPrecise: Bool) {
+    func registerScroll(deltaY rawDeltaY: CGFloat, isPrecise: Bool, phase: NSEvent.Phase = [], momentumPhase: NSEvent.Phase = []) {
+        // Ignore inertial (momentum) scroll after finger lift — only act on real gesture
+        guard momentumPhase.isEmpty || momentumPhase == .stationary else { return }
+
+        // Gesture ended: schedule a short reset so a new swipe starts fresh
+        if phase == .ended || phase == .cancelled {
+            scrollResetTimer?.invalidate()
+            scrollResetTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+                self?.scrollAccumulator = 0
+            }
+            return  // Don't act on the final zero-delta ended event
+        }
+
         let scaledDelta = isPrecise ? rawDeltaY : rawDeltaY * 8.0
         scrollAccumulator += scaledDelta
-        scrollResetTimer?.invalidate()
-        scrollResetTimer = Timer.scheduledTimer(withTimeInterval: 0.30, repeats: false) { [weak self] _ in
-            self?.scrollAccumulator = 0
+
+        // For mouse-wheel (no phase), use a short idle timer
+        if !isPrecise || phase.isEmpty {
+            scrollResetTimer?.invalidate()
+            scrollResetTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+                self?.scrollAccumulator = 0
+            }
         }
-        if scrollAccumulator <= -24 { setStage(.s0Idle); scrollAccumulator = 0; return }
+
+        // Collapse on scroll-down
+        if scrollAccumulator <= -16 { setStage(.s0Idle); scrollAccumulator = 0; return }
+
+        // Expand stages — lower thresholds for snappier trackpad feel
         switch scrollAccumulator {
-        case ..<20: break
-        case 20..<56: if currentStage != .s15Hover { setStage(.s15Hover) }
-        case 56..<126: if currentStage != .s2Card { setStage(.s2Card) }
-        default: if currentStage != .s3Dashboard { setStage(.s3Dashboard) }
+        case ..<12:   break
+        case 12..<36: if currentStage != .s15Hover    { setStage(.s15Hover)    }
+        case 36..<80: if currentStage != .s2Card      { setStage(.s2Card)      }
+        default:      if currentStage != .s3Dashboard { setStage(.s3Dashboard) }
         }
     }
 

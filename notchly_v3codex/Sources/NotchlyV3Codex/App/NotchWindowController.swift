@@ -44,10 +44,14 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
         tracker.onExit  = { [weak self] in self?.state.setHover(false) }
         tracker.onScroll = { [weak self] event in
             guard let self else { return }
+            let phase = event.phase
+            let momentumPhase = event.momentumPhase
             DispatchQueue.main.async {
                 self.state.registerScroll(
                     deltaY: event.scrollingDeltaY,
-                    isPrecise: event.hasPreciseScrollingDeltas
+                    isPrecise: event.hasPreciseScrollingDeltas,
+                    phase: phase,
+                    momentumPhase: momentumPhase
                 )
             }
         }
@@ -142,10 +146,14 @@ final class NotchWindowController: NSWindowController, @unchecked Sendable {
 
     private func handleScrollEvent(_ event: NSEvent) {
         guard cursorIsInHoverZone() else { return }
+        let phase = event.phase
+        let momentumPhase = event.momentumPhase
         DispatchQueue.main.async { [weak self] in
             self?.state.registerScroll(
                 deltaY: event.scrollingDeltaY,
-                isPrecise: event.hasPreciseScrollingDeltas
+                isPrecise: event.hasPreciseScrollingDeltas,
+                phase: phase,
+                momentumPhase: momentumPhase
             )
         }
     }
