@@ -1,73 +1,69 @@
 #!/usr/bin/env python3
 """
-Notchly Brain — personal assistant daemon
-Uses rule-based logic + optional Cloud AI (OpenRouter/Groq).
-Works fully offline. AI layer is bonus when API key is valid.
+Notchly Brain — personal AI assistant daemon
+Primary AI  : Ollama local (gemma3:4b) — offline, fast on Apple Silicon
+Fallback AI : Groq cloud (llama-3.3-70b) — free, ~200ms
+Data sources: Apple Calendar + Screenpipe screen reading + Music.app/Spotify
 
-Run: python3 brain_loop.py
+Run : python3 brain_loop.py
+Stop: Ctrl+C  (or kill from Notchly menu bar)
 """
 
-import json, os, time, subprocess, hashlib, sys
+import json, os, time, subprocess, hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 try:
     import requests
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+    print("⚠️  pip3 install requests")
 
-# ── Config ──────────────────────────────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────────────────────
 BASE           = Path.home() / "Documents/notchly/v2"
-OPENROUTER_KEY = ""          # paste your key here — brain works without it too
-GROQ_KEY       = ""          # alternative: groq.com free tier (very fast)
-POLL_SECONDS   = 600         # 10 minutes
+SCREENPIPE     = "http://localhost:3030"
+OLLAMA         = "http://localhost:11434"
+OLLAMA_MODEL   = "gemma3:4b"          # 3.5 GB — best assistant model under 5 GB
+GROQ_KEY       = ""                   # console.groq.com — free fallback
+POLL_SECONDS   = 600                  # 10 minutes
 
-# AI enrichment: set to True once you have a working key
-AI_ENABLED     = False
-
-# ── Apple native helpers ────────────────────────────────────────────────────
+# ── Apple helpers ────────────────────────────────────────────────────────────
 
 def calendar_events_today() -> list[dict]:
-    """Returns list of {title, hour, minute} for today's events."""
     script = '''
-    set out to {}
-    set d to current date
-    set time of d to 0
-    set tomorrow to d + 86400
-    tell application "Calendar"
-        repeat with c in calendars
-            try
-                set evts to (every event of c whose start date ≥ d and start date ≤ tomorrow)
-                repeat with e in evts
-                    set st to start date of e
-                    set entry to (summary of e) & "|" & (hours of st) & "|" & (minutes of st)
-                    set end of out to entry
-                end repeat
-            end try
-        end repeat
-    end tell
-    set AppleScript's text item delimiters to "~"
-    return out as text
-    '''
+set out to {}
+set d to current date
+set time of d to 0
+set tomorrow to d + 86400
+tell application "Calendar"
+    repeat with c in calendars
+        try
+            set evts to (every event of c whose start date ≥ d and start date ≤ tomorrow)
+            repeat with e in evts
+                set st to start date of e
+                set entry to (summary of e) & "|" & (hours of st) & "|" & (minutes of st)
+                set end of out to entry
+            end repeat
+        end try
+    end repeat
+end tell
+set AppleScript's text item delimiters to "~"
+return out as text
+'''
     try:
         r = subprocess.run(["osascript", "-e", script],
                            capture_output=True, text=True, timeout=8)
-        raw = r.stdout.strip()
-        if not raw or "unavailable" in raw:
-            return []
         events = []
-        for part in raw.split("~"):
+        for part in r.stdout.strip().split("~"):
             pieces = part.strip().split("|")
             if len(pieces) == 3:
                 try:
-                    events.append({
-                        "title":  pieces[0].strip(),
-                        "hour":   int(pieces[1]),
-                        "minute": int(pieces[2]),
-                    })
+                    events.append({"title": pieces[0].strip(),
+                                   "hour": int(pieces[1]), "minute": int(pieces[2])})
                 except ValueError:
-                    continue
+                    pass
         return events
     except Exception:
         return []
@@ -89,7 +85,42 @@ def now_playing() -> str:
     return ""
 
 
-def active_app() -> str:
+def _local_since(minutes: int) -> str:
+    """ISO8601 timestamp with local timezone offset (screenpipe uses local tz)."""
+    import subprocess as _sp
+    tz = _sp.run(["date", "+%z"], capture_output=True, text=True).stdout.strip()
+    dt = datetime.now() - timedelta(minutes=minutes)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + tz[:3] + ":" + tz[3:]
+
+def screenpipe_context() -> tuple[str, str]:
+    """(dominant_app, screen_text_summary). Reads last 30 min of screen frames."""
+    if not HAS_REQUESTS:
+        return "", ""
+    try:
+        r = requests.get(f"{SCREENPIPE}/search",
+                         params={"content_type": "ocr", "limit": 8,
+                                 "start_time": _local_since(30)},
+                         timeout=12)
+        items = r.json().get("data", [])
+        app_counts: dict[str, int] = {}
+        chunks: list[str] = []
+        for item in items:
+            c   = item.get("content", {})
+            txt = c.get("text", "").strip().replace("\n", " ")
+            app = c.get("app_name", "")
+            if app:
+                app_counts[app] = app_counts.get(app, 0) + 1
+            if txt and len(txt) > 20:
+                entry = f"[{app}] {txt[:90]}" if app else txt[:90]
+                if entry not in chunks:
+                    chunks.append(entry)
+        dominant = max(app_counts, key=app_counts.get) if app_counts else ""
+        return dominant, " | ".join(chunks[:4])
+    except Exception:
+        return "", ""
+
+
+def active_app_fallback() -> str:
     script = 'tell application "System Events" to return name of first process whose frontmost is true'
     try:
         r = subprocess.run(["osascript", "-e", script],
@@ -99,39 +130,19 @@ def active_app() -> str:
         return ""
 
 
-def screenpipe_context() -> str:
-    if not HAS_REQUESTS:
-        return ""
-    try:
-        since = (datetime.utcnow() - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = requests.get("http://localhost:3030/search",
-                         params={"content_type": "ocr", "limit": 5, "start_time": since},
-                         timeout=3)
-        items = r.json().get("data", [])
-        chunks = []
-        for item in items:
-            txt = item.get("content", {}).get("text", "").strip()
-            app = item.get("content", {}).get("app_name", "")
-            if txt and len(txt) > 15:
-                chunks.append(f"[{app}] {txt[:100]}")
-        return " | ".join(chunks[:3])
-    except Exception:
-        return ""
-
-
-# ── Music mood ──────────────────────────────────────────────────────────────
+# ── Music control ─────────────────────────────────────────────────────────────
 
 MOOD_PLAYLISTS = {
     "focus":    ["Focus", "Deep Work", "Lo-Fi", "Concentration"],
-    "relax":    ["Chill", "Calm", "Acoustic", "Easy Listening"],
+    "relax":    ["Chill", "Calm", "Acoustic"],
     "energy":   ["Workout", "Hype", "Upbeat"],
-    "creative": ["Inspiration", "Ambient", "Creative"],
+    "creative": ["Inspiration", "Ambient"],
 }
 
-def set_music_mood(mood: str):
-    candidates = MOOD_PLAYLISTS.get(mood.lower(), [])
-    for name in candidates:
-        script = f'tell application "Music" to try\nplay playlist "{name}"\nreturn "ok"\nend try\nreturn "no"'
+def set_music_mood(mood: str) -> bool:
+    for name in MOOD_PLAYLISTS.get(mood.lower(), []):
+        script = (f'tell application "Music"\ntry\nplay playlist "{name}"\n'
+                  f'return "ok"\nend try\nend tell\nreturn "no"')
         try:
             r = subprocess.run(["osascript", "-e", script],
                                capture_output=True, text=True, timeout=4)
@@ -143,7 +154,7 @@ def set_music_mood(mood: str):
     return False
 
 
-# ── Data helpers ────────────────────────────────────────────────────────────
+# ── Data I/O ──────────────────────────────────────────────────────────────────
 
 def read_json(path: Path, default):
     try:
@@ -163,216 +174,222 @@ def stable_id(*parts) -> str:
     return hashlib.md5(f"{day}:{'|'.join(str(p) for p in parts)}".encode()).hexdigest()[:10]
 
 
-# ── Alert dedup ─────────────────────────────────────────────────────────────
+# ── Alert helpers ─────────────────────────────────────────────────────────────
 
 _fired_at: dict[str, datetime] = {}
 
-def can_fire(aid: str, cooldown_minutes: int = 30) -> bool:
+def can_fire(aid: str, cooldown_min: int = 30) -> bool:
     last = _fired_at.get(aid)
-    if last and (datetime.now() - last).seconds < cooldown_minutes * 60:
-        return False
-    return True
+    return not (last and (datetime.now() - last).seconds < cooldown_min * 60)
 
 
-def push_alert(alerts_list: list, aid: str, type_: str,
-               title: str, message: str, priority: int = 2,
-               left: str = "Skip", right: str = "Got it") -> bool:
-    """Add alert to list and mark fired. Returns True if added."""
+def push_alert(lst: list, aid: str, type_: str, title: str, message: str,
+               priority: int = 2, left: str = "Skip", right: str = "Got it") -> bool:
     if not can_fire(aid):
         return False
-    existing_ids = {a["id"] for a in alerts_list}
-    if aid in existing_ids:
+    if any(a["id"] == aid for a in lst):
         return False
-    alerts_list.append({
-        "id":           aid,
-        "type":         type_,
-        "title":        title,
-        "message":      message,
-        "priority":     priority,
-        "action_left":  left,
-        "action_right": right,
-        "created_at":   datetime.now().isoformat(),
-    })
+    lst.append({"id": aid, "type": type_, "title": title, "message": message,
+                "priority": priority, "action_left": left, "action_right": right,
+                "created_at": datetime.now().isoformat()})
     _fired_at[aid] = datetime.now()
-    print(f"  🔔 Alert: [{type_}] {title}")
+    print(f"  🔔 [{type_}] {title}")
     return True
 
 
-# ── Smart rules engine ──────────────────────────────────────────────────────
+# ── Rule engine ───────────────────────────────────────────────────────────────
 
-FOCUS_APPS   = {"Xcode", "Visual Studio Code", "Code", "PyCharm", "Sublime Text",
-                "Notion", "Obsidian", "Bear", "Notes", "Terminal", "iTerm2"}
-DISTRACT_APPS = {"YouTube", "Safari", "Chrome", "Firefox", "Twitter", "Reddit",
-                 "Discord", "Messages", "Mail", "Slack"}
+FOCUS_APPS    = {"Xcode","Visual Studio Code","Code","PyCharm","Sublime Text",
+                 "Notion","Obsidian","Bear","Notes","Terminal","Warp","iTerm2"}
+DISTRACT_APPS = {"YouTube","Safari","Chrome","Firefox","Twitter","Reddit",
+                 "Discord","Messages","Mail","Slack","Instagram","TikTok"}
 
-_last_app = ""
-_app_start = datetime.now()
-_distract_warned = False
+_last_app   = ""
+_app_start  = datetime.now()
+_warned     = False
 
-
-def rules_engine(events: list[dict], schedule: list[dict],
-                 app: str, screen: str, music: str) -> dict:
-    """
-    Pure logic brain. Returns {goal, context, alerts, music_mood}.
-    No API calls needed.
-    """
-    global _last_app, _app_start, _distract_warned
-    now = datetime.now()
+def rules_engine(events: list, schedule: list, app: str,
+                 screen: str, music: str) -> dict:
+    global _last_app, _app_start, _warned
+    now    = datetime.now()
     alerts: list[dict] = []
 
-    # ── Track app switches ──
     if app and app != _last_app:
         _last_app  = app
         _app_start = now
-        _distract_warned = False
+        _warned    = False
 
-    # ── Calendar: upcoming event alerts ──
+    # Calendar: upcoming event within 10 min
     next_event = None
     for e in events:
-        event_dt = now.replace(hour=e["hour"], minute=e["minute"], second=0, microsecond=0)
-        delta_min = int((event_dt - now).total_seconds() / 60)
+        ev_dt     = now.replace(hour=e["hour"], minute=e["minute"], second=0, microsecond=0)
+        delta_min = int((ev_dt - now).total_seconds() / 60)
         if 0 < delta_min <= 10:
             next_event = e
-            aid = stable_id("event_soon", e["title"])
-            push_alert(alerts, aid, "calendar",
-                       f"{e['title']} in {delta_min}m",
-                       "Wrap up and get ready",
-                       priority=1, left="Later", right="On it")
+            push_alert(alerts, stable_id("evt_soon", e["title"]),
+                       "calendar", f"{e['title']} in {delta_min}m",
+                       "Wrap up and get ready", 1, "Later", "On it")
         elif delta_min == 0:
-            aid = stable_id("event_now", e["title"])
-            push_alert(alerts, aid, "calendar",
-                       f"{e['title']} starting now",
-                       "Time to join",
-                       priority=1, left="Skip", right="Joining")
+            push_alert(alerts, stable_id("evt_now", e["title"]),
+                       "calendar", f"{e['title']} now", "Time to join", 1, "Skip", "Joining")
 
-    # ── Distraction nudge: if in distract app > 20 min ──
+    # Distraction nudge after 20 min
     if app in DISTRACT_APPS:
-        in_app_min = int((now - _app_start).total_seconds() / 60)
-        if in_app_min >= 20 and not _distract_warned:
-            _distract_warned = True
-            active_task = next((t for t in schedule if t.get("status") == "active"), None)
-            task_hint = f"Back to '{active_task['title']}'" if active_task else "Get back to work"
-            aid = stable_id("distract", app)
-            push_alert(alerts, aid, "nudge",
-                       f"{in_app_min}min in {app}",
-                       task_hint,
-                       priority=2, left="5 more min", right="Back to work")
+        in_min = int((now - _app_start).total_seconds() / 60)
+        if in_min >= 20 and not _warned:
+            _warned = True
+            active = next((t for t in schedule if t.get("status") == "active"), None)
+            hint   = f"Back to '{active['title']}'" if active else "Get back to work"
+            push_alert(alerts, stable_id("distract", app),
+                       "nudge", f"{in_min}min in {app}", hint, 2, "5 more min", "Back to work")
 
-    # ── Focus streak praise (silent memory update, no alert) ──
     if app in FOCUS_APPS:
-        in_app_min = int((now - _app_start).total_seconds() / 60)
-        _distract_warned = False  # reset distraction flag
+        _warned = False
 
-    # ── Music mood suggestion ──
+    # Music mood by time of day (only if nothing playing)
     hour = now.hour
-    mood_suggestion = None
-    if not music:  # only suggest if nothing playing
-        if 9 <= hour < 13:
-            mood_suggestion = "focus"
-        elif 13 <= hour < 15:
-            mood_suggestion = "relax"
-        elif 15 <= hour < 19:
-            mood_suggestion = "focus"
-        elif 19 <= hour:
-            mood_suggestion = "relax"
+    mood = None
+    if not music:
+        if   9  <= hour < 13: mood = "focus"
+        elif 13 <= hour < 15: mood = "relax"
+        elif 15 <= hour < 19: mood = "focus"
+        elif 19 <= hour:      mood = "relax"
 
-    # ── Goal + context ──
-    active_task = next((t for t in schedule if t.get("status") == "active"), None)
+    # Goal + context
+    active  = next((t for t in schedule if t.get("status") == "active"), None)
     pending = [t["title"] for t in schedule if t.get("status") == "pending"]
 
-    if next_event and next_event in [e for e in events]:
-        goal = f"Prep for {next_event['title']}"
-    elif active_task:
-        goal = f"Finish {active_task['title']}"
-    elif pending:
-        goal = f"Start {pending[0]}"
-    else:
-        goal = "Great, you're free"
+    if   next_event:   goal = f"Prep for {next_event['title']}"
+    elif active:       goal = f"Finish {active['title']}"
+    elif pending:      goal = f"Start {pending[0]}"
+    else:              goal = "You're free — rest or plan next"
 
-    ctx_parts = []
-    if app:         ctx_parts.append(f"Using {app}")
-    if active_task: ctx_parts.append(f"Task: {active_task['title']}")
-    if music:       ctx_parts.append(f"Playing: {music[:30]}")
-    context_str = " · ".join(ctx_parts) or "Idle"
+    ctx_parts = [f"Using {app}"] if app else []
+    if active:  ctx_parts.append(f"Task: {active['title']}")
+    if music:   ctx_parts.append(f"Playing: {music[:30]}")
+    context = " · ".join(ctx_parts) or "Idle"
 
-    return {
-        "goal":       goal,
-        "context":    context_str,
-        "alerts":     alerts[:1],   # max 1 per cycle
-        "music_mood": mood_suggestion,
-    }
+    return {"goal": goal, "context": context,
+            "alerts": alerts[:1], "music_mood": mood}
 
 
-# ── Optional AI enrichment ──────────────────────────────────────────────────
+# ── AI enrichment ─────────────────────────────────────────────────────────────
 
-AI_SYSTEM = """You are Notchly Brain. Given context, return ONE JSON object (no markdown):
-{"todays_goal":"≤8 words","working_memory":"≤20 words","alerts":[],"music_mood":null}
-Alert schema: {"id":"short_id","type":"calendar|nudge|ai","title":"≤6 words","message":"≤12 words","priority":2,"action_left":"Skip","action_right":"Got it"}
-Fire at most 1 alert. Only if truly urgent."""
+AI_SYSTEM = (
+    "You are Notchly Brain, a macOS personal assistant. "
+    "Given context, return ONLY valid JSON (no markdown):\n"
+    '{"todays_goal":"≤8 words","working_memory":"≤20 words",'
+    '"alerts":[],"music_mood":null}\n'
+    'Alert: {"id":"short","type":"calendar|nudge|ai","title":"≤6 words",'
+    '"message":"≤12 words","priority":2,"action_left":"Skip","action_right":"Got it"}\n'
+    "Max 1 alert. Only if truly urgent."
+)
 
-def ai_enrich(context: dict, base_result: dict) -> dict:
-    """Optional AI pass over the rule-based result. Falls back to base if fails."""
-    if not HAS_REQUESTS or not (OPENROUTER_KEY or GROQ_KEY):
-        return base_result
-    prompt = f"""Time:{context['time']} | App:{context['app']} | Events:{context['events_str']}
-Active task:{context['active_task']} | Screen:{context['screen'][:200]}
-Rule suggestion — goal:"{base_result['goal']}" context:"{base_result['context']}"
-Improve or confirm these. Return JSON only."""
-    headers = {"Content-Type": "application/json", "X-Title": "Notchly"}
-    body = {"messages": [{"role":"system","content":AI_SYSTEM},{"role":"user","content":prompt}],
-            "max_tokens": 250, "temperature": 0.2}
+def ollama_available() -> bool:
     try:
-        if OPENROUTER_KEY:
-            headers["Authorization"] = f"Bearer {OPENROUTER_KEY}"
-            url, body["model"] = "https://openrouter.ai/api/v1/chat/completions", "anthropic/claude-3-haiku-20240307"
-        elif GROQ_KEY:
-            headers["Authorization"] = f"Bearer {GROQ_KEY}"
-            url, body["model"] = "https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant"
-        r = requests.post(url, headers=headers, json=body, timeout=10)
-        raw = r.json()["choices"][0]["message"]["content"].strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"): raw = raw[4:]
-        parsed = json.loads(raw.strip())
-        base_result["goal"]    = parsed.get("todays_goal", base_result["goal"])
-        base_result["context"] = parsed.get("working_memory", base_result["context"])
-        if parsed.get("alerts"):
-            base_result["alerts"] = parsed["alerts"][:1]
-        if parsed.get("music_mood"):
-            base_result["music_mood"] = parsed["music_mood"]
-        print("  ✨ AI enriched")
-    except Exception as e:
-        print(f"  ℹ️  AI skipped: {e}")
-    return base_result
+        r = requests.get(f"{OLLAMA}/api/tags", timeout=2)
+        models = [m["name"] for m in r.json().get("models", [])]
+        return any(OLLAMA_MODEL.split(":")[0] in m for m in models)
+    except Exception:
+        return False
 
 
-# ── Main tick ───────────────────────────────────────────────────────────────
+def call_ai(prompt: str) -> Optional[dict]:
+    """Try Ollama local first, then Groq cloud. Returns parsed dict or None."""
+    if not HAS_REQUESTS:
+        return None
+
+    # 1. Ollama local (gemma3:4b) — offline, Apple Silicon MPS
+    if ollama_available():
+        try:
+            r = requests.post(f"{OLLAMA}/v1/chat/completions",
+                              json={"model": OLLAMA_MODEL,
+                                    "messages": [{"role": "system", "content": AI_SYSTEM},
+                                                 {"role": "user",   "content": prompt}],
+                                    "max_tokens": 280, "temperature": 0.25,
+                                    "stream": False},
+                              timeout=25)
+            raw = r.json()["choices"][0]["message"]["content"].strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"): raw = raw[4:]
+            result = json.loads(raw.strip())
+            print(f"  ✨ Gemma3 (local)")
+            return result
+        except Exception as e:
+            print(f"  ℹ️  Ollama failed: {e}")
+
+    # 2. Groq cloud fallback (free, llama-3.3-70b)
+    if GROQ_KEY:
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {GROQ_KEY}",
+                                       "Content-Type": "application/json"},
+                              json={"model": "llama-3.3-70b-versatile",
+                                    "messages": [{"role": "system", "content": AI_SYSTEM},
+                                                 {"role": "user",   "content": prompt}],
+                                    "max_tokens": 280, "temperature": 0.2},
+                              timeout=12)
+            raw = r.json()["choices"][0]["message"]["content"].strip()
+            result = json.loads(raw.strip())
+            print("  ✨ Groq (cloud)")
+            return result
+        except Exception as e:
+            print(f"  ℹ️  Groq failed: {e}")
+
+    return None
+
+
+def ai_enrich(ctx: dict, base: dict) -> dict:
+    prompt = (
+        f"Time:{ctx['time']} | App:{ctx['app']} | Events:{ctx['events_str']}\n"
+        f"Active task:{ctx['active_task']} | Screen:{ctx['screen'][:300]}\n"
+        f"Rules suggest — goal:\"{base['goal']}\" context:\"{base['context']}\"\n"
+        "Improve or confirm. Return JSON only."
+    )
+    result = call_ai(prompt)
+    if not result:
+        return base
+    base["goal"]    = result.get("todays_goal",    base["goal"])
+    base["context"] = result.get("working_memory", base["context"])
+    if result.get("alerts"):     base["alerts"]     = result["alerts"][:1]
+    if result.get("music_mood"): base["music_mood"] = result["music_mood"]
+    return base
+
+
+# ── Main tick ─────────────────────────────────────────────────────────────────
 
 def tick():
-    now     = datetime.now()
-    events  = calendar_events_today()
-    app     = active_app()
-    screen  = screenpipe_context()
-    music   = now_playing()
+    now      = datetime.now()
+    events   = calendar_events_today()
+    music    = now_playing()
     schedule = read_json(BASE / "schedule.json", [])
 
-    events_str = ", ".join(f"{e['title']} @{e['hour']:02d}:{e['minute']:02d}" for e in events) or "none"
+    sp_app, sp_screen = screenpipe_context()
+    app = sp_app or active_app_fallback()
+
+    events_str  = ", ".join(f"{e['title']} @{e['hour']:02d}:{e['minute']:02d}"
+                             for e in events) or "none"
     active_task = next((t for t in schedule if t.get("status") == "active"), None)
 
-    print(f"[{now.strftime('%H:%M')}] app={app or '?'} | events={len(events)} | music={'yes' if music else 'no'}")
+    print(f"[{now.strftime('%H:%M')}] app={app or '?'} | "
+          f"events={len(events)} | screen={'✓' if sp_screen else '✗'} | "
+          f"music={'✓' if music else '✗'}")
 
-    result = rules_engine(events, schedule, app, screen, music)
+    result = rules_engine(events, schedule, app, sp_screen, music)
 
-    if AI_ENABLED:
-        ctx = {"time": now.strftime("%H:%M"), "app": app, "screen": screen,
-               "events_str": events_str, "active_task": active_task["title"] if active_task else "none"}
+    # AI enrichment if Ollama is ready or Groq key set
+    if ollama_available() or GROQ_KEY:
+        ctx = {"time": now.strftime("%H:%M"), "app": app, "screen": sp_screen,
+               "events_str": events_str,
+               "active_task": active_task["title"] if active_task else "none"}
         result = ai_enrich(ctx, result)
 
     # Write memory
     mem = read_json(BASE / "working_memory.json", {})
-    mem["todays_goal"]   = result["goal"]
-    mem["context"]       = result["context"]
-    mem["last_updated"]  = now.isoformat()
+    mem["todays_goal"]  = result["goal"]
+    mem["context"]      = result["context"]
+    mem["last_updated"] = now.isoformat()
     atomic_write(BASE / "working_memory.json", mem)
     print(f"  🎯 {result['goal']}")
 
@@ -382,7 +399,7 @@ def tick():
 
     # Alerts
     if result["alerts"]:
-        existing = read_json(BASE / "pending_alerts.json", [])
+        existing     = read_json(BASE / "pending_alerts.json", [])
         existing_ids = {a["id"] for a in existing}
         for a in result["alerts"]:
             if a["id"] not in existing_ids:
@@ -390,28 +407,27 @@ def tick():
         atomic_write(BASE / "pending_alerts.json", existing)
 
 
-# ── Entry point ─────────────────────────────────────────────────────────────
+# ── Entry ─────────────────────────────────────────────────────────────────────
 
 def main():
     BASE.mkdir(parents=True, exist_ok=True)
     (BASE / "cache").mkdir(exist_ok=True)
 
-    print("=" * 48)
+    ollama_ready = ollama_available()
+    print("=" * 50)
     print("🧠 Notchly Brain")
-    print(f"   Poll : every {POLL_SECONDS // 60} min")
-    print(f"   AI   : {'enabled' if AI_ENABLED else 'rule-based (fast)'}")
-    print(f"   Data : {BASE}")
-    print("=" * 48)
-    if not HAS_REQUESTS:
-        print("⚠️  pip3 install requests  (needed for Screenpipe + AI)")
-    print()
+    print(f"   Local AI : {'gemma3:4b ✓' if ollama_ready else 'gemma3:4b (still downloading...)'}")
+    print(f"   Cloud AI : {'Groq ✓' if GROQ_KEY else 'not set (optional)'}")
+    print(f"   Screenpipe: {'✓' if HAS_REQUESTS else '✗'}")
+    print(f"   Poll     : every {POLL_SECONDS // 60} min")
+    print("=" * 50)
 
     while True:
         try:
             tick()
         except Exception as e:
             print(f"  ❌ {e}")
-        print(f"  💤 Next tick in {POLL_SECONDS//60} min\n")
+        print(f"  💤 next in {POLL_SECONDS // 60}min\n")
         time.sleep(POLL_SECONDS)
 
 
