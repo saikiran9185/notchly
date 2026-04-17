@@ -275,15 +275,24 @@ def rules_engine(events: list, schedule: list, app: str,
 
 # ── AI enrichment ─────────────────────────────────────────────────────────────
 
-AI_SYSTEM = (
-    "You are Notchly Brain, a macOS personal assistant. "
-    "Given context, return ONLY valid JSON (no markdown):\n"
-    '{"todays_goal":"≤8 words","working_memory":"≤20 words",'
-    '"alerts":[],"music_mood":null}\n'
-    'Alert: {"id":"short","type":"calendar|nudge|ai","title":"≤6 words",'
-    '"message":"≤12 words","priority":2,"action_left":"Skip","action_right":"Got it"}\n'
-    "Max 1 alert. Only if truly urgent."
-)
+AI_SYSTEM = """\
+You are Notchly Brain, a macOS personal assistant running in the menu bar notch.
+Read the user context and return a single JSON object. No markdown. No explanation.
+
+Example output:
+{"todays_goal":"Ship Notchly v1 today","working_memory":"Deep coding session in Xcode","alerts":[],"music_mood":"focus"}
+
+Rules:
+- todays_goal: short action phrase, max 6 words, starts with a verb
+- working_memory: what the user appears to be doing right now, max 15 words
+- alerts: empty array [] unless something urgent (event in <10min, been stuck >30min)
+- music_mood: one of "focus", "relax", "energy", "creative", or null
+
+If there is an urgent alert, use this format inside the alerts array:
+{"id":"evt_abc123","type":"calendar","title":"Stand-up in 5min","message":"Wrap up and join","priority":1,"action_left":"Later","action_right":"Joining"}
+
+Return ONLY the JSON object. Nothing else.\
+"""
 
 def ollama_available() -> bool:
     try:
