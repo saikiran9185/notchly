@@ -2,7 +2,7 @@ import Foundation
 
 struct ChatService {
     private static let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-    private static let apiKey   = "REDACTED_KEY"
+    private static let apiKey   = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? ""
     private static let model    = "anthropic/claude-3-haiku-20240307"
 
     struct Message: Codable {
